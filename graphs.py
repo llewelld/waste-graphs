@@ -1,5 +1,7 @@
 #!/usr/bin/python3
 
+import sys
+import argparse
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.path as mpath
@@ -11,439 +13,829 @@ import datetime
 import getpass
 import math
 from ftplib import FTP
+import copy
+import json
 
 ################################################
-# Data loading
+# General configuration parameters
 
-with open('recycling.csv', 'rt') as data:
-	reader = csv.DictReader(data, delimiter=',', quotechar='"')
+class Config:
+	start_date = None
+	end_date = None
+	input_file = None
+	year = None
+	latest = None
+	suffix = None
+	ftp = None
+	username = None
+	password = None
 
-	dates = []
-	paper = []
-	card = []
-	glass = []
-	metal = []
-	returnables = []
-	compost = []
-	plastic = []
-	general = []
-	notes = []
-	
-	#Date,Paper,Card,Glass,Metal,Returnables/cans,Compost,Plastic,General
-	
-	for row in reader:
-		datepieces = row['Date'].split("/")
-		dates.append(datetime.date(2000 + int(datepieces[2]), int(datepieces[1]), int(datepieces[0])))
-		paper.append(int(row['Paper']))
-		card.append(int(row['Card']))
-		glass.append(int(row['Glass']))
-		metal.append(int(row['Metal']))
-		returnables.append(int(row['Returnables']))
-		compost.append(int(row['Compost']))
-		plastic.append(int(row['Plastic']))
-		general.append(int(row['General']))
-		notes.append(row['Notes'])
+	def __init__(self):
+		pass
 
-types = [paper, card, glass, metal, returnables, compost, plastic, general]
-types.reverse()
-y = np.vstack(types)
-colours=['#94070a', '#00381f', '#00864b', '#009353', '#00b274', '#65c295', '#8ccfb7', '#bee3d3']
+	def clear(self):
+		start_date = None
+		end_date = None
+		input_file = None
+		year = None
+		latest = None
+		suffix = None
+		ftp = None
+		username = None
+		password = None
 
-labels = reader.fieldnames[1:-1]
-labels.reverse()
+	def overlay_json(self, json):
+		if 'start' in json:
+			self.start_date = json['start']
+		if 'end' in json:
+			self.end_date = json['end']
+		if 'input' in json:
+			self.input_file = json['input']
+		if 'year' in json:
+			self.year = json['year']
+		if 'latest' in json:
+			self.latest = json['latest']
+		if 'suffix' in json:
+			self.suffix = json['suffix']
+		if 'ftp' in json:
+			self.ftp = json['ftp']
+		if 'username' in json:
+			self.username = json['username']
+		if 'password' in json:
+			self.password = json['password']
+		if 'all' in json:
+			self.start_date = None
+			self.end_date = None
+			self.year = None
+			self.latest = None
 
-dates.insert(0, dates[0] - timedelta(days = 7))
+	def overlay_args(self, args):
+		if args.start:
+			self.start_date = args.start
+		if args.end:
+			self.end_date = args.end
+		if args.input:
+			self.input_file = args.input
+		if args.year:
+			self.year = args.year
+		if args.latest:
+			self.latest = args.latest
+		if args.suffix:
+			self.suffix = args.suffix
+		if args.ftp:
+			self.ftp = args.ftp
+		if args.username:
+			self.username = args.username
+		if args.password:
+			self.password = args.password
+		if args.all:
+			self.start_date = None
+			self.end_date = None
+			self.year = None
+			self.latest = None
+
+	def print_config(self):
+		print('Start: {}'.format(self.start_date))
+		print('End: {}'.format(self.end_date))
+		print('Input file: {}'.format(self.input_file))
+		print('Year: {}'.format(self.year))
+		print('Latest: {}'.format(self.latest))
+		print('Suffix: {}'.format(self.suffix))
+		print('FTP location: {}'.format(self.ftp))
+		print('Username: {}'.format(self.username))
+		print('Passsword: {}'.format("Provided" if self.password else 'None'))
 
 ################################################
-# Original stacked line graph
+# Main data and graph management
 
-def create_plot(figsize, dpi, filename):
-	fig, ax = plt.subplots(nrows=1, ncols=2, gridspec_kw={'width_ratios': [20, 1]}, figsize=figsize, dpi=dpi)
-	ax[0].stackplot(dates[1:], y, labels=labels, colors=colours)
+class Graphs:
+	config = Config()
+	json = None
+	args = None
+	dates = None
+	types = None
+	labels = None
+	colours = ['#94070a', '#00381f', '#00864b', '#009353', '#00b274', '#65c295', '#8ccfb7', '#bee3d3']
+	file_suffix = ''
+	width = None
+	upload = None
 
-	handles, legend_labels = ax[0].get_legend_handles_labels()
-	handles.reverse()
-	legend_labels.reverse()
-	ax[0].legend(handles, legend_labels, loc='upper left')
+	def __init__(self):
+		pass
 
-	ax[0].set_ylabel("Quantity disposed (g)")
-	ax[0].set_xlabel("Date")
-	ax[0].autoscale(enable=True, axis='x', tight=True)
+	def read_date(string):
+		return datetime.date.fromisoformat(string)
 
-	# Averages
-	duration = dates[len(dates) - 1].toordinal() - dates[0].toordinal()
-	sums = [sum(paper), sum(card), sum(glass), sum(metal), sum(returnables), sum(compost), sum(plastic), sum(general)]
-	sums.reverse()
-	averages = [ x / float(duration) for x in sums ]
-	weekly = [ x * 7.0 for x in averages ]
+	def parse_arguments(self):
+		parser = argparse.ArgumentParser(description='Generate graphs about waste output')
+		parser.add_argument("--config", help='read config values from file')
+		parser.add_argument("--start", type=self.read_date, help='start date to plot from')
+		parser.add_argument("--end", type=self.read_date, help='end date to plot to')
+		parser.add_argument("--input", help='CSV data file to load', default='recycling.csv')
+		parser.add_argument("--year", type=int, help='plot graphs for a given year; overrides start and end arguments')
+		parser.add_argument("--latest", help='plot the most recent year; overrides start, end and year arguments', action="store_true")
+		parser.add_argument("--all", help='plot all values; overrides other time values', action="store_true")
+		parser.add_argument("--suffix", help='filename suffix to add; this will be chosen based on the input values if not explicitly provided')
+		parser.add_argument("--ftp", help="location to use for FTP upload in the form: server/path")
+		parser.add_argument("--username", help="username to use for FTP  upload")
+		parser.add_argument("--password", help="password to use for FTP upload")
+		self.args = parser.parse_args()
+		self.config.overlay_args(self.args)
 
-	bottom = [0]
-	for i in range(1, len(weekly)):
-		bottom.append(bottom[i - 1] + weekly[i - 1])
-		
-	ax[1].bar([0], weekly, bottom=bottom, color=colours, width=1.0)
+	@staticmethod
+	def get_data_point(types, pos):
+		data = []
+		for types_pos in range(0, len(types)):
+			data.append(types[types_pos][pos])
+		return data
 
-	ax[1].set_ylim(ax[0].get_ylim())
+	@staticmethod
+	def scale_data_point(data, factor):
+		for types_pos in range(0, len(data)):
+			data[types_pos] = data[types_pos] * factor
+		return data
 
-	ax[1].set_xlabel("Weekly\naverage")
-	ax[1].yaxis.set_label_position("right")
-	ax[1].yaxis.tick_right()
-	ax[1].set_xticklabels([])
+	@staticmethod
+	def replace_data_point(types, data, pos):
+		for types_pos in range(0, len(types)):
+			types[types_pos][pos] = data[types_pos]
 
-	fig.suptitle("Quantity of waste and recycling")
-	fig.patch.set_facecolor((1.0, 1.0, 1.0, 0.0))
-	plt.tight_layout(pad=2.0, w_pad=0.5)
-	plt.savefig(filename, bbox_inches='tight', transparent=True)
+	@staticmethod
+	def insert_data_point(types, data, pos):
+		for types_pos in range(0, len(types)):
+			types[types_pos].insert(pos, data[types_pos])
 
+	def load_data(self, input_file):
+		with open(input_file, 'rt') as data:
+			reader = csv.DictReader(data, delimiter=',', quotechar='"')
 
-################################################
-# Stacked histocurve
+			self.dates = []
+			paper = []
+			card = []
+			glass = []
+			metal = []
+			returnables = []
+			compost = []
+			plastic = []
+			general = []
+			notes = []
 
-def gradients(X, Y, i):
-	points = len(X)
+			#Date,Paper,Card,Glass,Metal,Returnables/cans,Compost,Plastic,General
 
-	xwidth = X[i + 1] - X[i]
-	area = 0.5 * (xwidth * (Y[i + 1] - Y[i]))
-	if area < 0:
-		area = -area
+			for row in reader:
+				datepieces = row['Date'].split("/")
+				self.dates.append(datetime.date(2000 + int(datepieces[2]), int(datepieces[1]), int(datepieces[0])))
+				paper.append(int(row['Paper']))
+				card.append(int(row['Card']))
+				glass.append(int(row['Glass']))
+				metal.append(int(row['Metal']))
+				returnables.append(int(row['Returnables']))
+				compost.append(int(row['Compost']))
+				plastic.append(int(row['Plastic']))
+				general.append(int(row['General']))
+				notes.append(row['Notes'])
 
-	if i > 0:
-		gradient_left = (Y[i + 1] - Y[i - 1]) / (X[i + 1] - X[i - 1]) 
-	else:
-		gradient_left = (Y[i + 1] - Y[i - 0]) / (X[i + 1] - X[i - 0]) 
+		self.types = [paper, card, glass, metal, returnables, compost, plastic, general]
+		self.types.reverse()
 
-	if i < points - 2:
-		gradient_right = (Y[i + 2] - Y[i - 0]) / (X[i + 2] - X[i - 0]) 
-	else:
-		gradient_right = (Y[i + 1] - Y[i - 0]) / (X[i + 1] - X[i - 0])
+		self.labels = reader.fieldnames[1:-1]
+		self.labels.reverse()
 
-	return gradient_left, gradient_right, xwidth, area
+	def process_inputs(self):
+		print("# Calculated inputs")
+		print()
 
-def ydash(x, y, i):
-	if i < 1:
-		return ydash(x, y, 1)
-	elif i >= len(x):
-		return ydash(x, y, len(x) - 1)
-	else:
-		return y[i] / (x[i] - x[i - 1])
+		if self.config.latest:
+			self.config.year = self.dates[-1].year
 
-def Xval(x, y, i):
-	if i < 0:
-		return x[0]
-	elif i >= 2 * len(x):
-		return x[len(x) - 1]
-	elif i % 2 == 0:
-		return x[(int)(i / 2)]
-	else:
-		return 0.5 * (Xval(x, y, i + 1) + Xval(x, y, i - 1))
-
-def Yval(x, y, i):
-	if i == 0:
-		return ydash(x, y, 1)
-	elif i % 2 == 0:
-		return 0.5 * (ydash(x, y, (int)(i / 2)) + ydash(x, y, (int)(i / 2) + 1))
-	else:
-		return ydash(x, y, (int)((i + 1) / 2)) + ((ydash(x, y, (int)((i + 1) / 2)) - Yval(x, y, i - 1)) / 2.0) + ((ydash(x, y, (int)((i + 1) / 2)) - Yval(x, y, i + 1)) / 2.0)	
-
-def generate_areacurve(x, y):
-	X = []
-	Y = []
-
-	points = len(x) * 2
-
-	for i in range(0, points):
-		X.append(Xval(x, y, i))
-		Y.append(Yval(x, y, i))
-
-	handles = []
-	handles.append((X[0], Y[0]))
-
-	for i in range(0, points - 2):
-		gradient_left, gradient_right, xwidth, area1 = gradients(X, Y, i)
-
-		Yleft = Y[i]
-		Yright = Y[i + 1]
-
-		if i % 2 == 0:
-			# Adjust to compensate for change in volume
-			gradient_left2, gradient_right2, xwidth2, area2 = gradients(X, Y, i + 1)
-			area = area1 + area2
-			B = (gradient_left * xwidth / 3.0)
-			Cdash = - (gradient_right * xwidth / 3.0)
-			Edash = (gradient_left2 * xwidth2 / 3.0)
-			F = - (gradient_right2 * xwidth2 / 3.0)
-			Ddelta = - 0.5 * (B + Cdash + Edash + F) / (xwidth + xwidth2)
-			D = area - 0.25 * (B + Cdash + Edash + F)
-			D = Y[i + 1] + Ddelta
-			Yright = D
-
-			#ax[0].plot(X[i], Y[i], "ro")
+		self.file_suffix = ''
+		if self.config.suffix:
+			self.file_suffix = '-{}'.format(self.config.suffix)
 		else:
-			Yleft = D
+			if self.config.year and not self.config.latest:
+				self.file_suffix='-{}'.format(self.config.year)
+			else:
+				if not self.config.start_date and not self.config.end_date and not self.config.year and not self.config.latest:
+					self.file_suffix='-all'
 
-		handles.append((X[i] + xwidth / 3.0, Yleft + (gradient_left * xwidth / 3.0)))
-		handles.append((X[i + 1] - xwidth / 3.0, Yright - (gradient_right * xwidth / 3.0)))
-		handles.append((X[i + 1], Yright))
+		if len(self.file_suffix) > 0:
+			print('File suffix: "{}"'.format(self.file_suffix))
+		else:
+			print('File suffix: None')
 
+		start_pos = 0
+		end_pos = len(self.dates)
+		check = 0
 
-	return handles
+		if self.config.year:
+			self.config.start_date = datetime.date(int(self.config.year), 1, 1)
+			self.config.end_date = datetime.date(int(self.config.year), 12, 31)
+			print('Start: {}'.format(self.config.start_date))
+			print('End: {}'.format(self.config.end_date))
 
-def bound_areacurve(top, bottom):
-	handles = top[:]
-	codes = [mpatches.Path.MOVETO] + [mpatches.Path.CURVE4] * (len(top) - 1)
-	bottom2 = bottom[:]
-	bottom2.reverse()
-	handles += bottom2
-	codes += [mpatches.Path.LINETO] + [mpatches.Path.CURVE4] * (len(bottom) - 1)
-	handles.append(top[0])
-	codes.append(mpatches.Path.CLOSEPOLY)
-	return handles, codes
+		if self.config.start_date:
+			# Remove entries prior to start_date
+			while check < len(self.dates) and self.dates[check] < self.config.start_date:
+				check += 1
+				start_pos = check
 
-def stackcurves(top, bottom):
-	if len(top) != len(bottom):
-		print("Stacked curves must have same number of points {} != {}".format(len(top), len(bottom)))
-		error("Stacked curves must have same number of points")
-	raised = []
-	for i in range(0, len(top)):
-		point = [top[i][0], top[i][1] + bottom[i][1]]
-		raised.append(point)
-	return raised
+		if self.config.end_date:
+			while check < len(self.dates) and self.dates[check] < self.config.end_date:
+				check += 1
+				end_pos = check
 
-def create_stackedareacurve(figsize, dpi, filename):
-	fig, ax = plt.subplots(nrows=1, ncols=2, gridspec_kw={'width_ratios': [20, 1]}, figsize=figsize, dpi=dpi)
-	x = [date.toordinal() for date in dates]
+		# Scale the data for the first date if the period overlaps with the start date
+		if start_pos > 0:
+			factor = 1.0 - ((self.config.start_date - self.dates[start_pos - 1]).days / (self.dates[start_pos] - self.dates[start_pos - 1]).days)
+			start_overhang_data = Graphs.get_data_point(self.types, start_pos)
+			start_overhang_data = Graphs.scale_data_point(start_overhang_data, factor)
+			Graphs.replace_data_point(self.types, start_overhang_data, start_pos)
+			# Insert an empty data point at the start
+			if factor > 0.0:
+				self.dates.insert(start_pos, self.config.start_date)
+				empty_data = [0] * len(self.types)
+				Graphs.insert_data_point(self.types, empty_data, start_pos)
+				end_pos += 1
 
-	ground = [0] * (len(general) + 1)
-	datas = [general[:], plastic[:], compost[:], returnables[:], metal[:], glass[:], card[:], paper[:]]
-	for data in datas:
-		data.insert(0, data[0])
+		# Check whether we need to insert an extra date at the end to accommodate overhang
+		if end_pos < len(self.dates):
+			factor = 1.0 - ((self.dates[end_pos] - self.config.end_date).days / (self.dates[end_pos] - self.dates[end_pos - 1]).days)
+			end_overhang_data = Graphs.get_data_point(self.types, end_pos)
+			end_overhang_data = Graphs.scale_data_point(end_overhang_data, factor)
+			self.dates.insert(end_pos, self.config.end_date)
+			# Insert an extra scaled data point at the end
+			Graphs.insert_data_point(self.types, end_overhang_data, end_pos)
+			end_pos += 1
 
-	colours=['#94070a', '#00381f', '#00864b', '#009353', '#00b274', '#65c295', '#8ccfb7', '#bee3d3']
+		self.dates = self.dates[start_pos:end_pos]
 
-	bottom = generate_areacurve(x, ground)
-	patches = []
-	ymax = 0.0
-	for i in range(0, len(datas)):
-		top = generate_areacurve(x, datas[i])
-		top2 = stackcurves(top, bottom)
-		ymax = max([ymax] + [p[1] for p in top2])
+		for pos in range(len(self.types)):
+			self.types[pos] = self.types[pos][start_pos:end_pos]
 
-		handles, codes = bound_areacurve(top2, bottom)
+		if not self.config.start_date:
+			self.config.start_date = self.dates[0]
 
-		path = mpatches.Path(handles, codes)
+		if not self.config.end_date:
+			self.config.end_date = self.dates[-1]
 
-		patches.append(mpatches.PathPatch(path, color="None", fc=colours[i], transform=ax[0].transData))
+		# Duration measured in 90-day periods
+		self.width = round((self.config.end_date - self.config.start_date).days / 90)
+		print('Width: {} periods of 90-days'.format(self.width))
 
-		bottom = top2
+		print()
 
-	patches.reverse()
-	for patch in patches:
-		ax[0].add_patch(patch)
+	def overview(self):
+		if (len(self.dates) > 2):
+			print("# Overview")
+			print()
+			start_date = self.dates[0]
+			penultimate_date = self.dates[len(self.dates) - 2]
+			end_date = self.dates[len(self.dates) - 1]
+			duration = (end_date - start_date).days
+			total = sum([sum(wastetype) for wastetype in self.types])
+			latest_total = sum([wastetype[len(wastetype) - 1] for wastetype in self.types])
+			latest_duration = (end_date - penultimate_date).days
 
-	ymax *= 1.03
-	ymax = math.ceil(ymax / 50.0) * 50.0
+			start_year = start_date.year
+			this_year = end_date.year
 
-	#ax[0].plot(X, Y)
+			year_average = {}
+			for year in range(start_year, this_year + 1):
+				year_total = 0
+				start = 0
+				end = 0
+				for i in range(len(self.dates)):
+					if self.dates[i].year == year:
+						if start == 0:
+							start = self.dates[i]
+							year_pos_start = i
+						year_total += sum([wastetype[i] for wastetype in self.types])
+						end = self.dates[i]
+						year_pos_end = i
+				# Add the fractional parts at the start
+				if year_pos_start > 0:
+					proportion = (datetime.date(year, 1, 1) - self.dates[year_pos_start - 1]).days / (self.dates[year_pos_start] - self.dates[year_pos_start - 1]).days
+					year_total -= proportion * sum([wastetype[year_pos_start] for wastetype in self.types])
+					start = datetime.date(year, 1, 1)
 
-	legend_labels = labels[:]
-	legend_labels.reverse()
-	ax[0].legend(legend_labels, loc='upper left')
+				# Add the fractional parts at end
+				if year_pos_end < len(self.dates) - 1:
+					proportion = (datetime.date(year, 12, 31) - self.dates[year_pos_end]).days / (self.dates[year_pos_end + 1] - self.dates[year_pos_end]).days
+					year_total += proportion * sum([wastetype[year_pos_end + 1] for wastetype in self.types])
+					end = datetime.date(year, 12, 31)
 
-	ax[0].set_ylabel("Quantity disposed (g / day)")
-	ax[0].set_xlabel("Date")
-	ax[0].autoscale(enable=True, axis='x', tight=True)
-	ax[0].set_ylim(bottom=0, top=ymax)
-	ax[0].set_xlim(left=dates[0], right=dates[len(dates) - 1])
+				year_duration = (end - start).days
+				if year_duration > 0:
+					year_average[year] = year_total / year_duration
 
+			print("Total period: \t{} - {} ({} days)".format(start_date, end_date, duration))
+			print("Latest period: \t{} - {} ({} days)".format(penultimate_date, end_date, latest_duration))
+			print()
 
-	# Averages
-	duration = dates[len(dates) - 1].toordinal() - dates[0].toordinal()
-	sums = [sum(paper), sum(card), sum(glass), sum(metal), sum(returnables), sum(compost), sum(plastic), sum(general)]
-	sums.reverse()
-	averages = [ x / float(duration) for x in sums ]
-	daily = [ x * 1.0 for x in averages ]
+			print("Overall daily average: \t\t{:.2f} g/day".format(total / duration))
 
-	bottom = [0]
-	for i in range(1, len(daily)):
-		bottom.append(bottom[i - 1] + daily[i - 1])
-		
-	ax[1].bar([0], daily, bottom=bottom, color=colours, width=1.0)
+			for year in year_average:
+				print("Year {} daily average: \t{:.2f} g/day".format(year, year_average[year]))
 
-	ax[1].set_ylim(ax[0].get_ylim())
+			print("Latest entry daily average: \t{:.2f} g/day".format(latest_total / latest_duration))
+			print()
 
-	ax[1].set_xlabel("Daily\naverage")
-	ax[1].yaxis.set_label_position("right")
-	ax[1].yaxis.tick_right()
-	ax[1].set_xticklabels([])
-	print ("Daily averages:", daily)
+	def plot_graphs(self):
+		print("# Plotting data")
+		print()
 
-	fig.suptitle("Quantity of waste and recycling")
-	fig.patch.set_facecolor((1.0, 1.0, 1.0, 0.0))
-	plt.tight_layout(pad=2.0, w_pad=0.5)
-	plt.savefig(filename, bbox_inches='tight', transparent=True)
+		self.upload = []
 
+		# Stacked line graph for debugging purposes, so don't upload
+		filenames = ['waste01{}.png'.format(self.file_suffix), 'waste01small{}.png'.format(self.file_suffix)]
+		self.upload = self.upload + filenames
+		dpis = [180, 90]
+		for filename, dpi in zip(filenames, dpis):
+			print("Generating graph '{}' at {} dpi".format(filename, dpi))
+			graph = LineGraph()
+			graph.dates = self.dates
+			graph.types = self.types
+			graph.labels = self.labels
+			graph.colours = self.colours
+			graph.start_date = self.config.start_date
+			graph.end_date = self.config.end_date
+			graph.create_plot(self.width, dpi=dpi, filename=filename)
+
+		filenames = ['waste08{}.png'.format(self.file_suffix), 'waste08small{}.png'.format(self.file_suffix)]
+		self.upload = self.upload + filenames
+		for filename, dpi in zip(filenames, dpis):
+			print("Generating graph '{}' at {} dpi".format(filename, dpi))
+			graph = Histocurve()
+			graph.dates = self.dates
+			graph.types = self.types
+			graph.labels = self.labels
+			graph.colours = self.colours
+			graph.start_date = self.config.start_date
+			graph.end_date = self.config.end_date
+			graph.create_stackedareacurve(self.width, dpi=dpi, filename=filename)
+
+		for i in range(0, len(graph.types)):
+			filenames = []
+			filenames.append("waste-detail0{}-{}{}.png".format(i, self.labels[i].lower(), self.file_suffix))
+			filenames.append("waste-detail0{}small-{}{}.png".format(i, self.labels[i].lower(), self.file_suffix))
+			self.upload = self.upload + filenames
+			for filename, dpi in zip(filenames, dpis):
+				print("Generating graph '{}' at {} dpi".format(filename, dpi))
+				graph = Histogram()
+				graph.dates = self.dates
+				graph.start_date = self.config.start_date
+				graph.end_date = self.config.end_date
+				graph.create_histogram(self.width, dpi=dpi, filename=filename, data=self.types[i], ylimit=0, colour=self.colours[i], title=self.labels[i])
+
+		print()
+
+	def ftp_upload(self):
+		# Upload the result
+		if self.config.ftp:
+			print("# Uploading data")
+			print()
+
+			ftp_server = ''
+			ftp_path = ''
+			if self.config.ftp:
+				transport = self.config.ftp.find(':')
+				transport = transport + 3 if transport >= 0 else 0
+				path = self.config.ftp[transport:].find('/')
+				if path >= 0:
+					ftp_server = self.config.ftp[:transport + path]
+					ftp_path = self.config.ftp[transport + path:]
+				else:
+					ftp_server = self.config.ftp
+					ftp_path = '/'
+				print('FTP server: {}'.format(ftp_server))
+				print('FTP path: {}'.format(ftp_path))
+
+			print
+			username = self.config.username
+			password = self.config.password
+			if not username or not password:
+				print('Please authenticate to {}'.format(ftp_server))
+				if username:
+					print('Username: {}'.format(username))
+				else:
+					username = input("Username: ")
+				if password:
+					print('Password: {}'.format('*****'))
+				else:
+					password = getpass.getpass()
+
+			print("Logging in to {} as {}".format(ftp_server, username))
+			ftp = FTP(ftp_server)
+			ftp.login(username, password)
+			ftp.cwd(ftp_path)
+
+			print("Uploading files")
+			for filename in self.upload:
+				print("Uploading '{}'".format(filename))
+				ftp.storbinary('STOR {}'.format(filename), open(filename, 'rb'))
+
+			ftp.quit()
+			print()
+
+	def draw(self, count = None):
+		print("# Input parameters")
+		print()
+		if count != None:
+			print('Repeat: {}'.format(count))
+		print('Config: {}'.format(self.args.config))
+		self.config.print_config()
+		print()
+		self.load_data(self.config.input_file)
+		self.process_inputs()
+		self.overview()
+		self.plot_graphs()
+		self.ftp_upload()
+
+	def execute_config(self):
+		json_data = {}
+		if self.args.config:
+			with open(self.args.config, 'rt') as config_json:
+				json_data = json.loads(config_json.read())
+
+		if 'repeat' in json_data:
+			count = 0
+			for step in json_data['repeat']:
+				self.config.clear()
+				self.config.overlay_json(json_data)
+				self.config.overlay_json(step)
+				self.config.overlay_args(graphs.args)
+				self.draw(count)
+				count += 1
+		else:
+			self.config.clear()
+			self.config.overlay_json(json_data)
+			self.config.overlay_args(graphs.args)
+			self.draw()
+
+################################################
+# Stacked line graph with average
+
+class LineGraph:
+	dates = None
+	types = None
+	labels = None
+	colours = None
+	start_date = None
+	end_date = None
+
+	def __init__(self):
+		pass
+
+	def create_plot(self, width, dpi, filename):
+		figsize = (width * 2.875 + 0.5, 6)
+		ratios = [width * 2.875, 0.5]
+		fig, ax = plt.subplots(nrows=1, ncols=2, gridspec_kw={'width_ratios': ratios}, figsize=figsize, dpi=dpi)
+		y = np.vstack(self.types)
+		ax[0].stackplot(self.dates[0:], y, labels=self.labels, colors=self.colours)
+
+		handles, legend_labels = ax[0].get_legend_handles_labels()
+		handles.reverse()
+		legend_labels.reverse()
+		ax[0].legend(handles, legend_labels, loc='upper left')
+
+		ax[0].set_ylabel("Quantity disposed (g)")
+		ax[0].set_xlabel("Date")
+		#ax[0].autoscale(enable=True, axis='x', tight=True)
+		ax[0].set_xlim(self.start_date, self.end_date)
+
+		# Averages
+		duration = self.dates[len(self.dates) - 1].toordinal() - self.dates[0].toordinal()
+		sums = [sum(items) for items in self.types]
+		averages = [ x / float(duration) for x in sums ]
+		weekly = [ x * 7.0 for x in averages ]
+
+		bottom = [0]
+		for i in range(1, len(weekly)):
+			bottom.append(bottom[i - 1] + weekly[i - 1])
+
+		ax[1].bar([0], weekly, bottom=bottom, color=self.colours, width=1.0)
+
+		ax[1].set_ylim(ax[0].get_ylim())
+
+		ax[1].set_xlabel("Weekly\naverage")
+		ax[1].yaxis.set_label_position("right")
+		ax[1].yaxis.tick_right()
+		ax[1].set_xticklabels([])
+
+		fig.suptitle("Quantity of waste and recycling")
+		fig.patch.set_facecolor((1.0, 1.0, 1.0, 0.0))
+		plt.tight_layout(pad=2.0, w_pad=0.5)
+		plt.savefig(filename, bbox_inches='tight', transparent=True)
+		plt.close()
+
+################################################
+# Stacked histocurve with average
+
+class Histocurve:
+	dates = None
+	types = None
+	labels = None
+	colours = None
+	start_date = None
+	end_date = None
+
+	def __init__(self):
+		pass
+
+	@staticmethod
+	def gradients(X, Y, i):
+		points = len(X)
+
+		xwidth = X[i + 1] - X[i]
+		area = 0.5 * (xwidth * (Y[i + 1] - Y[i]))
+		if area < 0:
+			area = -area
+
+		if i > 0:
+			gradient_left = (Y[i + 1] - Y[i - 1]) / (X[i + 1] - X[i - 1])
+		else:
+			gradient_left = (Y[i + 1] - Y[i - 0]) / (X[i + 1] - X[i - 0])
+
+		if i < points - 2:
+			gradient_right = (Y[i + 2] - Y[i - 0]) / (X[i + 2] - X[i - 0])
+		else:
+			gradient_right = (Y[i + 1] - Y[i - 0]) / (X[i + 1] - X[i - 0])
+
+		return gradient_left, gradient_right, xwidth, area
+
+	@staticmethod
+	def ydash(x, y, i):
+		if i < 1:
+			return Histocurve.ydash(x, y, 1)
+		elif i >= len(x):
+			return Histocurve.ydash(x, y, len(x) - 1)
+		else:
+			return y[i] / (x[i] - x[i - 1])
+
+	@staticmethod
+	def Xval(x, y, i):
+		if i < 0:
+			return x[0]
+		elif i >= 2 * len(x):
+			return x[len(x) - 1]
+		elif i % 2 == 0:
+			return x[(int)(i / 2)]
+		else:
+			return 0.5 * (Histocurve.Xval(x, y, i + 1) + Histocurve.Xval(x, y, i - 1))
+
+	@staticmethod
+	def Yval(x, y, i):
+		if i == 0:
+			return Histocurve.ydash(x, y, 1)
+		elif i % 2 == 0:
+			return 0.5 * (Histocurve.ydash(x, y, (int)(i / 2)) + Histocurve.ydash(x, y, (int)(i / 2) + 1))
+		else:
+			return Histocurve.ydash(x, y, (int)((i + 1) / 2)) + ((Histocurve.ydash(x, y, (int)((i + 1) / 2)) - Histocurve.Yval(x, y, i - 1)) / 2.0) + ((Histocurve.ydash(x, y, (int)((i + 1) / 2)) - Histocurve.Yval(x, y, i + 1)) / 2.0)
+
+	@staticmethod
+	def generate_areacurve(x, y):
+		X = []
+		Y = []
+
+		points = len(x) * 2
+
+		for i in range(0, points):
+			X.append(Histocurve.Xval(x, y, i))
+			Y.append(Histocurve.Yval(x, y, i))
+
+		handles = []
+		handles.append((X[0], Y[0]))
+
+		for i in range(0, points - 2):
+			gradient_left, gradient_right, xwidth, area1 = Histocurve.gradients(X, Y, i)
+
+			Yleft = Y[i]
+			Yright = Y[i + 1]
+
+			if i % 2 == 0:
+				# Adjust to compensate for change in volume
+				gradient_left2, gradient_right2, xwidth2, area2 = Histocurve.gradients(X, Y, i + 1)
+				area = area1 + area2
+				B = (gradient_left * xwidth / 3.0)
+				Cdash = - (gradient_right * xwidth / 3.0)
+				Edash = (gradient_left2 * xwidth2 / 3.0)
+				F = - (gradient_right2 * xwidth2 / 3.0)
+				Ddelta = - 0.5 * (B + Cdash + Edash + F) / (xwidth + xwidth2)
+				D = area - 0.25 * (B + Cdash + Edash + F)
+				D = Y[i + 1] + Ddelta
+				Yright = D
+
+				#ax[0].plot(X[i], Y[i], "ro")
+			else:
+				Yleft = D
+
+			handles.append((X[i] + xwidth / 3.0, Yleft + (gradient_left * xwidth / 3.0)))
+			handles.append((X[i + 1] - xwidth / 3.0, Yright - (gradient_right * xwidth / 3.0)))
+			handles.append((X[i + 1], Yright))
+
+		return handles
+
+	@staticmethod
+	def bound_areacurve(top, bottom):
+		handles = top[:]
+		codes = [mpatches.Path.MOVETO] + [mpatches.Path.CURVE4] * (len(top) - 1)
+		bottom2 = bottom[:]
+		bottom2.reverse()
+		handles += bottom2
+		codes += [mpatches.Path.LINETO] + [mpatches.Path.CURVE4] * (len(bottom) - 1)
+		handles.append(top[0])
+		codes.append(mpatches.Path.CLOSEPOLY)
+		return handles, codes
+
+	@staticmethod
+	def stackcurves(top, bottom):
+		if len(top) != len(bottom):
+			print("Stacked curves must have same number of points {} != {}".format(len(top), len(bottom)))
+			error("Stacked curves must have same number of points")
+		raised = []
+		for i in range(0, len(top)):
+			point = [top[i][0], top[i][1] + bottom[i][1]]
+			raised.append(point)
+		return raised
+
+	def create_stackedareacurve(self, width, dpi, filename):
+		figsize=(width * 2.875 + 0.5, 6)
+		ratios = [width * 2.875, 0.5]
+		fig, ax = plt.subplots(nrows=1, ncols=2, gridspec_kw={'width_ratios': ratios}, figsize=figsize, dpi=dpi)
+		x = [date.toordinal() for date in self.dates]
+
+		ground = [0] * (len(self.types[0]) + 1)
+		datas = copy.deepcopy(self.types)
+
+		bottom = Histocurve.generate_areacurve(x, ground)
+		patches = []
+		ymax = 0.0
+		for i in range(0, len(datas)):
+			top = Histocurve.generate_areacurve(x, datas[i])
+			top2 = Histocurve.stackcurves(top, bottom)
+			ymax = max([ymax] + [p[1] for p in top2])
+
+			handles, codes = Histocurve.bound_areacurve(top2, bottom)
+
+			path = mpatches.Path(handles, codes)
+
+			patches.append(mpatches.PathPatch(path, color="None", fc=self.colours[i], transform=ax[0].transData))
+
+			bottom = top2
+
+		patches.reverse()
+		for patch in patches:
+			ax[0].add_patch(patch)
+
+		ymax *= 1.03
+		ymax = math.ceil(ymax / 50.0) * 50.0
+
+		#ax[0].plot(X, Y)
+
+		legend_labels = self.labels[:]
+		legend_labels.reverse()
+		ax[0].legend(legend_labels, loc='upper left')
+
+		ax[0].set_ylabel("Quantity disposed (g / day)")
+		ax[0].set_xlabel("Date")
+		#ax[0].autoscale(enable=True, axis='x', tight=True)
+		ax[0].set_ylim(bottom=0, top=ymax)
+		#ax[0].set_xlim(left=dates[0], right=dates[len(dates) - 1])
+		ax[0].set_xlim(self.start_date, self.end_date)
+
+		# Averages
+		duration = self.dates[len(self.dates) - 1].toordinal() - self.dates[0].toordinal()
+		sums = [sum(items) for items in self.types]
+		averages = [ x / float(duration) for x in sums ]
+		daily = [ x * 1.0 for x in averages ]
+
+		bottom = [0]
+		for i in range(1, len(daily)):
+			bottom.append(bottom[i - 1] + daily[i - 1])
+
+		ax[1].bar([0], daily, bottom=bottom, color=self.colours, width=1.0)
+
+		ax[1].set_ylim(ax[0].get_ylim())
+
+		ax[1].set_xlabel("Daily\naverage")
+		ax[1].yaxis.set_label_position("right")
+		ax[1].yaxis.tick_right()
+		ax[1].set_xticklabels([])
+
+		fig.suptitle("Quantity of waste and recycling")
+		fig.patch.set_facecolor((1.0, 1.0, 1.0, 0.0))
+		plt.tight_layout(pad=2.0, w_pad=0.5)
+		plt.savefig(filename, bbox_inches='tight', transparent=True)
+		plt.close()
 
 ################################################
 # Histogram with average
 
-def create_histogram(figsize, dpi, filename, data, ylimit, colour, title):
-	fig, ax = plt.subplots(nrows=1, ncols=2, gridspec_kw={'width_ratios': [20, 1]}, figsize=figsize, dpi=dpi)
+class Histogram:
+	dates = None
+	start_date = None
+	end_date = None
 
-	ymax = 0.0
+	def __init__(self):
+		pass
 
-	widths = [-7]
-	for i in range(1, len(dates)):
-		widths.append(dates[i - 1].toordinal() - dates[i].toordinal())
+	def create_histogram(self, width, dpi, filename, data, ylimit, colour, title):
+		figsize=(width * 2.875 + 0.5, 6)
+		ratios = [width * 2.875, 0.5]
+		fig, ax = plt.subplots(nrows=1, ncols=2, gridspec_kw={'width_ratios': ratios}, figsize=figsize, dpi=dpi)
 
-	y = data[:]
-	y.insert(0, y[0])
-	for i in range(0, len(widths)):
-		y[i] = y[i] / -widths[i]
+		ymax = 0.0
 
-	ymax = max(y)
-	ymax *= 1.03
-	ymax = math.ceil(ymax / 50.0) * 50.0
+		widths = [-7]
+		for i in range(1, len(self.dates)):
+			widths.append(self.dates[i - 1].toordinal() - self.dates[i].toordinal())
 
-	if ylimit == 0:
-		ylimit = ymax
+		y = data[:]
+		#y.insert(0, y[0])
+		for i in range(0, len(widths)):
+			y[i] = y[i] / -widths[i]
 
-	ax[0].bar(dates, y, widths, align='edge', color=colour, edgecolor='black')
+		ymax = max(y)
+		ymax *= 1.03
+		ymax = math.ceil(ymax / 50.0) * 50.0
 
-	ax[0].set_ylabel("Quantity disposed (g / day)")
-	ax[0].set_xlabel("Date")
-	ax[0].autoscale(enable=True, axis='x', tight=True)
-	ax[0].set_ylim(bottom=0, top=ylimit)
-	ax[0].set_xlim(left=dates[0], right=dates[len(dates) - 1])
+		if ylimit == 0:
+			ylimit = ymax
 
-	# Averages
-	duration = dates[len(dates) - 1].toordinal() - dates[0].toordinal()
-	sums = sum(data)
+		ax[0].bar(self.dates, y, widths, align='edge', color=colour, edgecolor='black')
 
-	average = sum(data) / float(duration)
+		ax[0].set_ylabel("Quantity disposed (g / day)")
+		ax[0].set_xlabel("Date")
+		#ax[0].autoscale(enable=True, axis='x', tight=True)
+		ax[0].set_ylim(bottom=0, top=ylimit)
+		#ax[0].set_xlim(left=dates[0], right=dates[len(dates) - 1])
+		ax[0].set_xlim(self.start_date, self.end_date)
 
-	ax[1].bar([0], average, color=colour, width=1.0)
+		# Averages
+		duration = self.dates[len(self.dates) - 1].toordinal() - self.dates[0].toordinal()
+		sums = sum(data)
 
-	ax[1].set_ylim(ax[0].get_ylim())
+		average = sum(data) / float(duration)
 
-	ax[1].set_xlabel("Daily\naverage")
-	ax[1].yaxis.set_label_position("right")
-	ax[1].yaxis.tick_right()
-	ax[1].set_xticklabels([])
+		ax[1].bar([0], average, color=colour, width=1.0)
 
-# em-dash \xe2
+		ax[1].set_ylim(ax[0].get_ylim())
 
-	if title != '':
-		fig.suptitle("Quantity of waste and recycling - " + title)
-	else:
-		fig.suptitle("Quantity of waste and recycling")
+		ax[1].set_xlabel("Daily\naverage")
+		ax[1].yaxis.set_label_position("right")
+		ax[1].yaxis.tick_right()
+		ax[1].set_xticklabels([])
 
-	plt.tight_layout(pad=2.0, w_pad=0.5)
-	plt.savefig(filename, bbox_inches='tight', transparent=True)
+		if title != '':
+			fig.suptitle("Quantity of waste and recycling - " + title)
+		else:
+			fig.suptitle("Quantity of waste and recycling")
+
+		plt.tight_layout(pad=2.0, w_pad=0.5)
+		plt.savefig(filename, bbox_inches='tight', transparent=True)
+		plt.close()
 
 
 ################################################
 # Main
 
-if (len(dates) > 2):
-	print("# Overview")
-	print()
-	start_date = dates[0]
-	penultimate_date = dates[len(dates) - 2]
-	end_date = dates[len(dates) - 1]
-	duration = (end_date - start_date).days
-	total = sum([sum(wastetype) for wastetype in types])
-	latest_total = sum([wastetype[len(wastetype) - 1] for wastetype in types])
-	latest_duration = (end_date - penultimate_date).days
+# Data file format
+#
+# CSV file with a headings line followed by data lines
+# Example:
+#
+# Date,Paper,Card,Glass,Metal,Returnables,Compost,Plastic,General,Notes
+# 11/08/19,0,0,0,0,0,0,0,0,"Not a reading"
+# 18/08/19,221,208,534,28,114,584,0,426,"A proper reading"
 
-	start_year = start_date.year
-	this_year = end_date.year
+# Config file format
+#
+# JSON file containing config values
+# If a repeat array is included then multiple runs will be performed
+# Example:
+#
+# {
+# 	"start": "<YYYY-MM-DD>",
+# 	"end": "<YYYY-MM-DD>",
+# 	"input": "<filename>",
+# 	"year": <year>,
+# 	"latest": <0|1>,
+# 	"suffix": "<suffix>",
+# 	"ftp": "<server>/<path>",
+# 	"username": "<username>",
+# 	"password": "<password>",
+#
+# 	"repeat": [
+# 		{
+# 			"start": "<YYYY-MM-DD>",
+# 			...
+# 		}
+# 	]
+# }
 
-	year_average = {}
-	for year in range(start_year, this_year + 1):
-		year_total = 0
-		start = 0
-		end = 0
-		for i in range(len(dates) - 1):
-			if dates[i + 1].year == year:
-				if start == 0:
-					start = dates[i]
-				year_total += sum([wastetype[i] for wastetype in types])
-				end = dates[i + 1]
+graphs = Graphs()
+graphs.parse_arguments()
+graphs.execute_config()
 
-		year_duration = (end - start).days
-		if year_duration > 0:
-			year_average[year] = year_total / year_duration
-
-	print("Total period: \t{} - {} ({} days)".format(start_date, end_date, duration))
-	print("Latest period: \t{} - {} ({} days)".format(penultimate_date, end_date, latest_duration))
-	print()
-
-	print("Overall daily average: \t\t{:.2f} g/day".format(total / duration))
-
-	for year in year_average:
-		print("Year {} daily average: \t{:.2f} g/day".format(year, year_average[year]))
-
-	print("Latest entry daily average: \t{:.2f} g/day".format(latest_total / latest_duration))
-	print()
-
-print("# Plotting data")
-print()
-
-upload = []
-
-# Stacked line graph for debugging purposes, so don't upload
-filenames = ['waste01.png', 'waste01small.png']
-upload = upload + filenames
-dpis = [180, 90]
-for filename, dpi in zip(filenames, dpis):
-	print("Generating graph '{}' at {} dpi".format(filename, dpi))
-	create_plot(figsize=(12, 6), dpi=dpi, filename=filename)
-
-
-filenames = ['waste08.png', 'waste08small.png']
-upload = upload + filenames
-for filename, dpi in zip(filenames, dpis):
-	print("Generating graph '{}' at {} dpi".format(filename, dpi))
-	create_stackedareacurve(figsize=(12, 6), dpi=dpi, filename=filename)
-
-for i in range(0, len(types)):
-	filenames = []
-	filenames.append("waste-detail0{}-{}.png".format(i, labels[i].lower()))
-	filenames.append("waste-detail0{}small-{}.png".format(i, labels[i].lower()))
-	upload = upload + filenames
-	for filename, dpi in zip(filenames, dpis):
-		print("Generating graph '{}' at {} dpi".format(filename, dpi))
-		create_histogram(figsize=(12, 6), dpi=dpi, filename=filename, data=types[i], ylimit=0, colour=colours[i], title=labels[i])
-
-# Upload the result
-location = ''
-path = ''
-username = ''
-print
-location_check = input('Server name ({}): '.format(location))
-if location_check != '':
-	location = location_check
-
-path_check = input('Folder path ({}): '.format(path))
-if path_check != '':
-	path = path_check
-
-print("Please authenticate to {}".format(location))
-username_check = input("Username ({}): ".format(username))
-if username_check != '':
-	username = username_check
-password = getpass.getpass()
-
-print("Logging in to {} as {}".format(location, username))
-ftp = FTP(location)
-ftp.login(username, password)
-ftp.cwd(path)
-
-print("Uploading files")
-for filename in upload:
-	print("Uploading '{}'".format(filename))
-	ftp.storbinary('STOR {}'.format(filename), open(filename, 'rb'))
-
-ftp.quit()
 print("All done")
 

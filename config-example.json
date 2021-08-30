@@ -1,0 +1,12 @@
+{
+	"input": "recycling-example.csv",
+	"repeat": [
+		{
+			"all": 1
+		},
+		{
+			"latest": 1
+		}
+	]
+}
+
