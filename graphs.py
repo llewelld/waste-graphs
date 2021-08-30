@@ -23,6 +23,7 @@ class Config:
 	start_date = None
 	end_date = None
 	input_file = None
+	output_dir = None
 	year = None
 	latest = None
 	suffix = None
@@ -37,6 +38,7 @@ class Config:
 		start_date = None
 		end_date = None
 		input_file = None
+		output_dir = None
 		year = None
 		latest = None
 		suffix = None
@@ -51,6 +53,8 @@ class Config:
 			self.end_date = json['end']
 		if 'input' in json:
 			self.input_file = json['input']
+		if 'outdir' in json:
+			self.output_dir = json['outdir']
 		if 'year' in json:
 			self.year = json['year']
 		if 'latest' in json:
@@ -76,6 +80,8 @@ class Config:
 			self.end_date = args.end
 		if args.input:
 			self.input_file = args.input
+		if args.outdir:
+			self.output_dir = args.outdir
 		if args.year:
 			self.year = args.year
 		if args.latest:
@@ -98,6 +104,7 @@ class Config:
 		print('Start: {}'.format(self.start_date))
 		print('End: {}'.format(self.end_date))
 		print('Input file: {}'.format(self.input_file))
+		print('Output directory: {}'.format(self.output_dir))
 		print('Year: {}'.format(self.year))
 		print('Latest: {}'.format(self.latest))
 		print('Suffix: {}'.format(self.suffix))
@@ -132,6 +139,7 @@ class Graphs:
 		parser.add_argument("--start", type=self.read_date, help='start date to plot from')
 		parser.add_argument("--end", type=self.read_date, help='end date to plot to')
 		parser.add_argument("--input", help='CSV data file to load', default='recycling.csv')
+		parser.add_argument("--outdir", help='Directory to store the generated PNG graphs')
 		parser.add_argument("--year", type=int, help='plot graphs for a given year; overrides start and end arguments')
 		parser.add_argument("--latest", help='plot the most recent year; overrides start, end and year arguments', action="store_true")
 		parser.add_argument("--all", help='plot all values; overrides other time values', action="store_true")
@@ -340,6 +348,9 @@ class Graphs:
 			print("Latest entry daily average: \t{:.2f} g/day".format(latest_total / latest_duration))
 			print()
 
+	def format_path(self, filename):
+		return '{}/{}'.format(self.config.output_dir, filename) if self.config.output_dir else filename
+
 	def plot_graphs(self):
 		print("# Plotting data")
 		print()
@@ -359,7 +370,8 @@ class Graphs:
 			graph.colours = self.colours
 			graph.start_date = self.config.start_date
 			graph.end_date = self.config.end_date
-			graph.create_plot(self.width, dpi=dpi, filename=filename)
+			filepath = self.format_path(filename)
+			graph.create_plot(self.width, dpi=dpi, filename=filepath)
 
 		filenames = ['waste08{}.png'.format(self.file_suffix), 'waste08small{}.png'.format(self.file_suffix)]
 		self.upload = self.upload + filenames
@@ -372,7 +384,8 @@ class Graphs:
 			graph.colours = self.colours
 			graph.start_date = self.config.start_date
 			graph.end_date = self.config.end_date
-			graph.create_stackedareacurve(self.width, dpi=dpi, filename=filename)
+			filepath = self.format_path(filename)
+			graph.create_stackedareacurve(self.width, dpi=dpi, filename=filepath)
 
 		for i in range(0, len(graph.types)):
 			filenames = []
@@ -385,7 +398,8 @@ class Graphs:
 				graph.dates = self.dates
 				graph.start_date = self.config.start_date
 				graph.end_date = self.config.end_date
-				graph.create_histogram(self.width, dpi=dpi, filename=filename, data=self.types[i], ylimit=0, colour=self.colours[i], title=self.labels[i])
+				filepath = self.format_path(filename)
+				graph.create_histogram(self.width, dpi=dpi, filename=filepath, data=self.types[i], ylimit=0, colour=self.colours[i], title=self.labels[i])
 
 		print()
 
@@ -432,7 +446,8 @@ class Graphs:
 			print("Uploading files")
 			for filename in self.upload:
 				print("Uploading '{}'".format(filename))
-				ftp.storbinary('STOR {}'.format(filename), open(filename, 'rb'))
+				filepath = self.format_path(filename)
+				ftp.storbinary('STOR {}'.format(filename), open(filepath, 'rb'))
 
 			ftp.quit()
 			print()

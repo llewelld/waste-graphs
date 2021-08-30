@@ -22,6 +22,7 @@ optional arguments:
   --start START        start date to plot from
   --end END            end date to plot to
   --input INPUT        CSV data file to load
+  --outdir OUTDIR      Directory to store the generated PNG graphs
   --year YEAR          plot graphs for a given year; overrides start and end arguments
   --latest             plot the most recent year; overrides start, end and year arguments
   --all                plot all values; overrides other time values
