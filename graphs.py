@@ -716,7 +716,12 @@ class Histocurve:
 		#ax[0].autoscale(enable=True, axis='x', tight=True)
 		ax[0].set_ylim(bottom=0, top=ymax)
 		#ax[0].set_xlim(left=dates[0], right=dates[len(dates) - 1])
-		ax[0].set_xlim(self.start_date, self.end_date)
+		ax[0].set_xlim(self.start_date.toordinal(), self.end_date.toordinal())
+
+		# Display the x axis labels as dates rather than numbers
+		def formatter(x, pos):
+			return datetime.date.fromordinal(int(x))
+		ax[0].xaxis.set_major_formatter(formatter)
 
 		# Averages
 		duration = self.dates[len(self.dates) - 1].toordinal() - self.dates[0].toordinal()
