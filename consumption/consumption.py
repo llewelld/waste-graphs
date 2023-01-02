@@ -302,7 +302,16 @@ class Consumption:
 
 		#self.colours = ['#94070a', '#00381f', '#00864b', '#009353', '#00b274', '#65c295', '#8ccfb7', '#bee3d3']
 
-	def annual_stats(self):
+	def plot_sub_stacked(self, ax, daily):
+		bottom = [0]
+		for i in range(1, len(daily)):
+			bottom.append(bottom[i - 1] + daily[i - 1])
+
+		ax.bar([0], daily, bottom=bottom, color=self.colours, width=1.0)
+		ax.set_ylim(ax.get_ylim())
+		ax.set_xticklabels([])
+
+	def annual_stats(self, filename):
 		totals = {'total': {'quantity': 0, 'weight': 0.0, 'price': 0.0}}
 		for purchase in self.purchases:
 			category = purchase['category']
@@ -334,81 +343,49 @@ class Consumption:
 			print('Average price per weight: {:.2f} €/kg'.format(1000.0 * item['price'] / item['weight']))
 			print()
 
-		fig, ax = plt.subplots(nrows=1, ncols=3, figsize=(6, 12), dpi=180)
 
-		# Average quantities
-		daily = [ totals[category]['quantity'] / self.duration for category in self.categories ]
-		print(self.categories)
-		print(len(daily))
+		filenames = ['{}.png'.format(filename), '{}small.png'.format(filename)]
+		dpis = [180, 90]
+		for filename, dpi in zip(filenames, dpis):
+			print("Generating graph '{}' at {} dpi".format(filename, dpi))
+			fig, ax = plt.subplots(nrows=1, ncols=3, figsize=(6, 12), dpi=dpi)
 
-		bottom = [0]
-		for i in range(1, len(daily)):
-			bottom.append(bottom[i - 1] + daily[i - 1])
+			# Average quantities
+			daily = [ totals[category]['quantity'] / self.duration for category in self.categories ]
+			self.plot_sub_stacked(ax[0], daily)
+			ax[0].set_xlabel("Daily number\nitems/day")
+			daily_total = total['quantity'] / self.duration
+			ax[0].text(0, daily_total, '{:.1f} items'.format(daily_total), ha='center', va='bottom')
 
-		ax[0].bar([0], daily, bottom=bottom, color=self.colours, width=1.0)
+			# Average weights
+			daily = [ totals[category]['weight'] / self.duration for category in self.categories ]
+			self.plot_sub_stacked(ax[1], daily)
+			ax[1].set_xlabel("Daily weight\ng/day")
+			daily_total = total['weight'] / self.duration
+			ax[1].text(0, daily_total, '{:.0f} g'.format(daily_total), ha='center', va='bottom')
 
-		ax[0].set_ylim(ax[0].get_ylim())
+			# Average prices
+			daily = [ totals[category]['price'] / self.duration for category in self.categories ]
+			self.plot_sub_stacked(ax[2], daily)
+			ax[2].set_xlabel("Daily price\n€/day")
+			daily_total = total['price'] / self.duration
+			ax[2].text(0, daily_total, '{:.2f} €'.format(daily_total), ha='center', va='bottom')
 
-		ax[0].set_xlabel("Daily number\nitems/day")
-		ax[0].set_xticklabels([])
+			patches = []
+			for count in range(len(self.categories)):
+				patches.append(mpatches.Patch(color=self.colours[count], label=self.categories[count].capitalize()))
+			patches.reverse()
+			fig.legend(handles=patches, loc='right', ncol=1, bbox_to_anchor=(1.3, 0.5))
 
-		daily_total = total['quantity'] / self.duration
-		ax[0].text(0, daily_total, '{:.1f} items'.format(daily_total), ha='center', va='bottom')
+			fig.suptitle("Daily consumption based on purchases")
+			fig.patch.set_facecolor((1.0, 1.0, 1.0, 0.0))
+			plt.tight_layout(pad=2.0, w_pad=0.5)
+			plt.savefig(filename, bbox_inches='tight', transparent=True)
+			plt.close()
 
-		# Average weights
-		daily = [ totals[category]['weight'] / self.duration for category in self.categories ]
-		print(self.categories)
-		print(len(daily))
-
-		bottom = [0]
-		for i in range(1, len(daily)):
-			bottom.append(bottom[i - 1] + daily[i - 1])
-
-		ax[1].bar([0], daily, bottom=bottom, color=self.colours, width=1.0)
-
-		ax[1].set_ylim(ax[1].get_ylim())
-
-		ax[1].set_xlabel("Daily weight\ng/day")
-		ax[1].set_xticklabels([])
-
-		daily_total = total['weight'] / self.duration
-		ax[1].text(0, daily_total, '{:.0f} g'.format(daily_total), ha='center', va='bottom')
-
-		# Average prices
-		daily = [ totals[category]['price'] / self.duration for category in self.categories ]
-		print(self.categories)
-		print(len(daily))
-
-		bottom = [0]
-		for i in range(1, len(daily)):
-			bottom.append(bottom[i - 1] + daily[i - 1])
-
-		ax[2].bar([0], daily, bottom=bottom, color=self.colours, width=1.0)
-
-		ax[2].set_ylim(ax[2].get_ylim())
-
-		ax[2].set_xlabel("Daily price\n€/day")
-		ax[2].set_xticklabels([])
-
-		daily_total = total['price'] / self.duration
-		ax[2].text(0, daily_total, '{:.2f} €'.format(daily_total), ha='center', va='bottom')
-
-		patches = []
-		for count in range(len(self.categories)):
-			patches.append(mpatches.Patch(color=self.colours[count], label=self.categories[count].capitalize()))
-		patches.reverse()
-		fig.legend(handles=patches, loc='right', ncol=1, bbox_to_anchor=(1.3, 0.5))
-
-		fig.suptitle("Daily consumption based on purchases")
-		fig.patch.set_facecolor((1.0, 1.0, 1.0, 0.0))
-		plt.tight_layout(pad=2.0, w_pad=0.5)
-		plt.savefig('temp.png', bbox_inches='tight', transparent=True)
-		plt.close()
-
-	def draw_year_graph(self):
+	def draw_year_graph(self, value, filename, title, units):
 		start_date = self.purchases[0]['date']
 		end_date = self.purchases[-1]['date']
-		value = 'price'
 		quantise = 7.0
 		types = []
 		for category in range(len(self.categories)):
@@ -429,10 +406,7 @@ class Consumption:
 
 			types[category_index][types_index] += item[value]
 
-
-
-		
-		filenames = ['temp01.png', 'temp01small.png']
+		filenames = ['{}.png'.format(filename), '{}small.png'.format(filename)]
 		dpis = [180, 90]
 		width = round((end_date - start_date).days / 90)
 		for filename, dpi in zip(filenames, dpis):
@@ -445,7 +419,7 @@ class Consumption:
 			graph.start_date = start_date
 			graph.end_date = end_date
 			filepath = self.format_path(filename)
-			graph.create_stackedareacurve(width, dpi=dpi, filename=filepath)
+			graph.create_stackedareacurve(width, dpi=dpi, filename=filepath, title=title, units=units)
 
 
 
@@ -913,7 +887,7 @@ class Histocurve:
 			raised.append(point)
 		return raised
 
-	def create_stackedareacurve(self, width, dpi, filename):
+	def create_stackedareacurve(self, width, dpi, filename, title, units):
 		figsize=(width * 2.875 + 0.5, 6)
 		ratios = [width * 2.875, 0.5]
 		fig, ax = plt.subplots(nrows=1, ncols=2, gridspec_kw={'width_ratios': ratios}, figsize=figsize, dpi=dpi)
@@ -1099,8 +1073,9 @@ consumption = Consumption()
 #consumption.parse_arguments()
 #consumption.execute_config()
 consumption.load_category_data('categories.csv', 'purchases.csv')
-consumption.annual_stats()
-consumption.draw_year_graph()
+consumption.annual_stats('consumption01')
+consumption.draw_year_graph('weight', 'consumption02', 'Weight of household purchases', 'g')
+consumption.draw_year_graph('price', 'consumption03', 'Cost of household purchases', '€')
 
 
 
