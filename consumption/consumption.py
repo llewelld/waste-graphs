@@ -23,10 +23,11 @@ class Config:
 	start_date = None
 	end_date = None
 	input_file = None
+	categories_file = None
 	output_dir = None
 	year = None
-	latest = None
 	suffix = None
+	colours = None
 	ftp = None
 	username = None
 	password = None
@@ -46,71 +47,336 @@ class Config:
 		username = None
 		password = None
 
+	# Needed:
+	# input csv, input categories, colours, outdir, suffix
+
 	def overlay_json(self, json):
-		if 'start' in json:
-			self.start_date = json['start']
-		if 'end' in json:
-			self.end_date = json['end']
 		if 'input' in json:
 			self.input_file = json['input']
+		if 'categories' in json:
+			self.categories_file = json['categories']
 		if 'outdir' in json:
 			self.output_dir = json['outdir']
-		if 'year' in json:
-			self.year = json['year']
-		if 'latest' in json:
-			self.latest = json['latest']
 		if 'suffix' in json:
 			self.suffix = json['suffix']
+		if 'colours' in json:
+			self.colours = json['colours']
 		if 'ftp' in json:
 			self.ftp = json['ftp']
 		if 'username' in json:
 			self.username = json['username']
 		if 'password' in json:
 			self.password = json['password']
-		if 'all' in json:
-			self.start_date = None
-			self.end_date = None
-			self.year = None
-			self.latest = None
 
 	def overlay_args(self, args):
-		if args.start:
-			self.start_date = args.start
-		if args.end:
-			self.end_date = args.end
 		if args.input:
 			self.input_file = args.input
+		if args.categories:
+			self.categories_file = args.categories
 		if args.outdir:
 			self.output_dir = args.outdir
-		if args.year:
-			self.year = args.year
-		if args.latest:
-			self.latest = args.latest
 		if args.suffix:
 			self.suffix = args.suffix
+		if args.colours:
+			self.colours = args.colours
 		if args.ftp:
 			self.ftp = args.ftp
 		if args.username:
 			self.username = args.username
 		if args.password:
 			self.password = args.password
-		if args.all:
-			self.start_date = None
-			self.end_date = None
-			self.year = None
-			self.latest = None
 
 	def print_config(self):
-		print('Start: {}'.format(self.start_date))
-		print('End: {}'.format(self.end_date))
 		print('Input file: {}'.format(self.input_file))
+		print('Categories file: {}'.format(self.categories_file))
 		print('Output directory: {}'.format(self.output_dir))
-		print('Year: {}'.format(self.year))
-		print('Latest: {}'.format(self.latest))
 		print('Suffix: {}'.format(self.suffix))
+		print('Colours: {}'.format(self.colours))
 		print('FTP location: {}'.format(self.ftp))
 		print('Username: {}'.format(self.username))
 		print('Passsword: {}'.format("Provided" if self.password else 'None'))
+
+################################################
+# From graphs.py
+
+class Waste:
+	config = Config()
+	json = None
+	args = None
+	dates = None
+	types = None
+	labels = None
+	colours = ['#94070a', '#00381f', '#00864b', '#009353', '#00b274', '#65c295', '#8ccfb7', '#bee3d3']
+	file_suffix = ''
+	width = None
+	upload = None
+
+	categories = ['paper', 'card', 'glass', 'metal', 'returnables', 'compost', 'plastic', 'general']
+	categories_reversed = []
+
+	def __init__(self):
+		self.categories_reversed = self.categories.copy()
+		self.categories_reversed.reverse()
+		pass
+
+	@staticmethod
+	def get_data_point(types, pos):
+		data = []
+		for types_pos in range(0, len(types)):
+			data.append(types[types_pos][pos])
+		return data
+
+	@staticmethod
+	def scale_data_point(data, factor):
+		for types_pos in range(0, len(data)):
+			data[types_pos] = data[types_pos] * factor
+		return data
+
+	@staticmethod
+	def replace_data_point(types, data, pos):
+		for types_pos in range(0, len(types)):
+			types[types_pos][pos] = data[types_pos]
+
+	@staticmethod
+	def insert_data_point(types, data, pos):
+		for types_pos in range(0, len(types)):
+			types[types_pos].insert(pos, data[types_pos])
+
+	def load_data(self, input_file):
+		with open(input_file, 'rt') as data:
+			reader = csv.DictReader(data, delimiter=',', quotechar='"')
+
+			self.dates = []
+			paper = []
+			card = []
+			glass = []
+			metal = []
+			returnables = []
+			compost = []
+			plastic = []
+			general = []
+			notes = []
+
+			#Date,Paper,Card,Glass,Metal,Returnables/cans,Compost,Plastic,General
+
+			for row in reader:
+				datepieces = row['Date'].split("/")
+				self.dates.append(datetime.date(2000 + int(datepieces[2]), int(datepieces[1]), int(datepieces[0])))
+				paper.append(int(row['Paper']))
+				card.append(int(row['Card']))
+				glass.append(int(row['Glass']))
+				metal.append(int(row['Metal']))
+				returnables.append(int(row['Returnables']))
+				compost.append(int(row['Compost']))
+				plastic.append(int(row['Plastic']))
+				general.append(int(row['General']))
+				notes.append(row['Notes'])
+
+		self.types = [paper, card, glass, metal, returnables, compost, plastic, general]
+		self.types.reverse()
+
+		self.labels = reader.fieldnames[1:-1]
+		self.labels.reverse()
+
+	def process_inputs(self):
+		print("# Calculated inputs")
+		print()
+
+		start_pos = 0
+		end_pos = len(self.dates)
+		check = 0
+
+		if self.config.year:
+			self.config.start_date = datetime.date(int(self.config.year), 1, 1)
+			self.config.end_date = datetime.date(int(self.config.year), 12, 31)
+			print('Start: {}'.format(self.config.start_date))
+			print('End: {}'.format(self.config.end_date))
+
+		if self.config.start_date:
+			# Remove entries prior to start_date
+			while check < len(self.dates) and self.dates[check] < self.config.start_date:
+				check += 1
+				start_pos = check
+
+		if self.config.end_date:
+			while check < len(self.dates) and self.dates[check] < self.config.end_date:
+				check += 1
+				end_pos = check
+
+		# Scale the data for the first date if the period overlaps with the start date
+		if start_pos > 0:
+			factor = 1.0 - ((self.config.start_date - self.dates[start_pos - 1]).days / (self.dates[start_pos] - self.dates[start_pos - 1]).days)
+			start_overhang_data = Waste.get_data_point(self.types, start_pos)
+			start_overhang_data = Waste.scale_data_point(start_overhang_data, factor)
+			Waste.replace_data_point(self.types, start_overhang_data, start_pos)
+			# Insert an empty data point at the start
+			if factor > 0.0:
+				self.dates.insert(start_pos, self.config.start_date)
+				empty_data = [0] * len(self.types)
+				Waste.insert_data_point(self.types, empty_data, start_pos)
+				end_pos += 1
+
+		# Check whether we need to insert an extra date at the end to accommodate overhang
+		if end_pos < len(self.dates):
+			factor = 1.0 - ((self.dates[end_pos] - self.config.end_date).days / (self.dates[end_pos] - self.dates[end_pos - 1]).days)
+			end_overhang_data = Waste.get_data_point(self.types, end_pos)
+			end_overhang_data = Waste.scale_data_point(end_overhang_data, factor)
+			self.dates.insert(end_pos, self.config.end_date)
+			# Insert an extra scaled data point at the end
+			Waste.insert_data_point(self.types, end_overhang_data, end_pos)
+			end_pos += 1
+
+		self.dates = self.dates[start_pos:end_pos]
+
+		for pos in range(len(self.types)):
+			self.types[pos] = self.types[pos][start_pos:end_pos]
+
+		if not self.config.start_date:
+			self.config.start_date = self.dates[0]
+
+		if not self.config.end_date:
+			self.config.end_date = self.dates[-1]
+
+		# Duration measured in 90-day periods
+		self.width = round((self.config.end_date - self.config.start_date).days / 90)
+		print('Width: {} periods of 90-days'.format(self.width))
+
+		print('Start date: {}, end date: {}'.format(self.dates[0], self.dates[-1]))
+
+		print()
+
+
+	daily_pos = 0
+
+	def daily_reset(self):
+		self.daily_pos = 0
+
+	def find_interval_start(self, day):
+		# The latest entry with date prior to or equal to day
+		pos = self.daily_pos
+		if (pos < 0) or (pos >= len(self.dates)) or (self.dates[pos] >= day):
+			pos = 0
+		# Find the date before
+		before = pos
+		while (pos < len(self.dates)) and (self.dates[pos] <= day):
+			if self.dates[before] != self.dates[pos]:
+				before = pos
+			pos += 1
+		self.daily_pos = before
+		return before
+
+	def daily_amount(self, day, first_day, last_date, key):
+		key_index = self.get_category_index(key)
+		accumulation = 0
+		pos = self.find_interval_start(day)
+		start_pos = pos
+		if pos <= 0:
+			start_date = first_day
+		else:
+			start_date = self.dates[pos]
+
+		while (pos <= len(self.dates)) and (self.dates[pos] <= day):
+			pos += 1
+			accumulation += self.types[key_index][pos]
+		if pos == len(self.dates):
+			end_date = last_date
+		else:
+			end_date = self.dates[pos]
+		# Number of days for this period
+		days = max((end_date - start_date).days, 1)
+		# Average quantity per day
+		return accumulation / days
+
+	def get_category_index(self, category):
+		return self.categories_reversed.index(category)
+
+	def debug_print_amounts(self, start_date, end_date):
+		self.daily_reset()
+		day = start_date
+		while day < end_date:
+			general = self.daily_amount(day, start_date, end_date, 'paper')
+			plastic = self.daily_amount(day, start_date, end_date, 'plastic')
+			print('Date: {}, paper: {}, plastic: {}'.format(day, general, plastic))
+			day += datetime.timedelta(days=1)
+
+class Comparison:
+	consumption = None
+	waste = None
+
+	def __init__(self, consumption, waste):
+		self.consumption = consumption
+		self.waste = waste
+
+	def average_error(self, start_date, end_date, category, offset):
+		duration = (end_date - start_date).days
+		start_consumption = self.consumption.dates[0]
+		end_consumption = self.consumption.dates[-1]
+		start_waste = self.waste.dates[0]
+		end_waste = self.waste.dates[-1]
+
+		print('Calculating average error on overlap')
+		print('Requested period: {} -- {}'.format(start_date, end_date))
+		print('Requested duration: {} days'.format(duration))
+		print('Consumption period: {} -- {}'.format(start_consumption, end_consumption))
+		print('Waste period: {} -- {}'.format(start_waste, end_waste))
+		print('Offset: {} days'.format(offset))
+
+		start_offset = start_date + datetime.timedelta(days=offset)
+		end_offset = end_date + datetime.timedelta(days=offset)
+
+		print('Offset period: {} -- {}'.format(start_offset, end_offset))
+
+		if start_offset < start_waste:
+			shift = datetime.timedelta((start_waste - start_offset).days)
+			start_offset += shift
+			start_date += shift
+			print('Updated start date: {}'.format(start_date))
+
+		if end_offset > end_waste:
+			shift = (end_offset - end_waste).days
+			duration -= shift
+			print('Updated duration: {}'.format(duration))
+
+		print()
+		print('Constrained period consumption: {} -- {}'.format(start_date, start_date + datetime.timedelta(days=duration)))
+		print('Constrained period waste: {} -- {}'.format(start_offset, start_offset + datetime.timedelta(days=duration)))
+		print()
+
+		self.consumption.daily_reset()
+		self.waste.daily_reset()
+		amount_consumption = []
+		amount_waste = []
+		for pos in range(duration):
+			day = start_date + datetime.timedelta(days=pos)
+			offset_day = start_date + datetime.timedelta(days=(pos + offset))
+
+			if category == 'all':
+				day_consumption = 0
+				day_waste = 0
+				for check_category in waste.categories:
+					day_consumption += self.consumption.daily_amount(day, end_date, check_category)
+					day_waste += self.waste.daily_amount(offset_day, start_offset, end_offset, check_category)
+			else:
+				day_consumption = self.consumption.daily_amount(day, end_date, category)
+				day_waste = self.waste.daily_amount(offset_day, start_offset, end_offset, category)
+			amount_consumption.append(day_consumption)
+			amount_waste.append(day_waste)
+
+		if sum(amount_consumption) == 0:
+			scale = 1
+		else:
+			scale = sum(amount_waste) / sum(amount_consumption)
+		amount_consumption = [x * scale for x in amount_consumption]
+
+		error = 0.0
+		for pos in range(duration):
+			day_consumption = amount_consumption[pos]
+			day_waste = amount_waste[pos]
+			error += (day_consumption - day_waste)**2
+			#print('Date: {}, waste: {}, consumption: {}'.format(day, day_consumption, day_waste))
+		average_error = error / duration
+		return average_error
+
 
 ################################################
 # Main data and graph management
@@ -129,24 +395,19 @@ class Consumption:
 	categories = None
 	purchases = None
 	duration = 0
+	daily_pos = 0
 
 	def __init__(self):
 		pass
 
-	def read_date(string):
-		return datetime.date.fromisoformat(string)
-
 	def parse_arguments(self):
-		parser = argparse.ArgumentParser(description='Generate graphs about waste output')
+		parser = argparse.ArgumentParser(description='Generate graphs about consumption input')
 		parser.add_argument("--config", help='read config values from file')
-		parser.add_argument("--start", type=self.read_date, help='start date to plot from')
-		parser.add_argument("--end", type=self.read_date, help='end date to plot to')
-		parser.add_argument("--input", help='CSV data file to load', default='recycling.csv')
-		parser.add_argument("--outdir", help='Directory to store the generated PNG graphs')
-		parser.add_argument("--year", type=int, help='plot graphs for a given year; overrides start and end arguments')
-		parser.add_argument("--latest", help='plot the most recent year; overrides start, end and year arguments', action="store_true")
-		parser.add_argument("--all", help='plot all values; overrides other time values', action="store_true")
+		parser.add_argument("--input", help='CSV data file to load', default='purchases.csv')
+		parser.add_argument("--categories", help='CSV categories file to load', default='categories.csv')
+		parser.add_argument("--outdir", help='directory to store the generated PNG graphs')
 		parser.add_argument("--suffix", help='filename suffix to add; this will be chosen based on the input values if not explicitly provided')
+		parser.add_argument("--colours", help='colour scheme to use', choices=['waste', 'consumption'])
 		parser.add_argument("--ftp", help="location to use for FTP upload in the form: server/path")
 		parser.add_argument("--username", help="username to use for FTP  upload")
 		parser.add_argument("--password", help="password to use for FTP upload")
@@ -198,7 +459,7 @@ class Consumption:
 					if row['Category'] not in self.categories:
 						self.categories.append(row['Category'])
 					products[product] = category
-		
+
 		product_num = len(products)
 		with open(purchase_file, 'rt') as data:
 			reader = csv.DictReader(data, delimiter=',', quotechar='"')
@@ -273,7 +534,7 @@ class Consumption:
 
 		self.labels = reader.fieldnames[1:-1]
 		self.labels.reverse()
-		
+
 		self.duration = (self.dates[-1] - self.dates[0]).days
 		print('Total duration: {} days'.format(self.duration))
 
@@ -311,7 +572,7 @@ class Consumption:
 		ax.set_ylim(ax.get_ylim())
 		ax.set_xticklabels([])
 
-	def annual_stats(self, filename):
+	def annual_stats(self, filenames):
 		totals = {'total': {'quantity': 0, 'weight': 0.0, 'price': 0.0}}
 		for purchase in self.purchases:
 			category = purchase['category']
@@ -344,7 +605,6 @@ class Consumption:
 			print()
 
 
-		filenames = ['{}.png'.format(filename), '{}small.png'.format(filename)]
 		dpis = [180, 90]
 		for filename, dpi in zip(filenames, dpis):
 			print("Generating graph '{}' at {} dpi".format(filename, dpi))
@@ -383,7 +643,7 @@ class Consumption:
 			plt.savefig(filename, bbox_inches='tight', transparent=True)
 			plt.close()
 
-	def draw_year_graph(self, value, filename, title, units):
+	def draw_year_graph(self, value, filenames, title, units):
 		start_date = self.purchases[0]['date']
 		end_date = self.purchases[-1]['date']
 		quantise = 7.0
@@ -406,7 +666,6 @@ class Consumption:
 
 			types[category_index][types_index] += item[value]
 
-		filenames = ['{}.png'.format(filename), '{}small.png'.format(filename)]
 		dpis = [180, 90]
 		width = round((end_date - start_date).days / 90)
 		for filename, dpi in zip(filenames, dpis):
@@ -421,145 +680,55 @@ class Consumption:
 			filepath = self.format_path(filename)
 			graph.create_stackedareacurve(width, dpi=dpi, filename=filepath, title=title, units=units)
 
+	def daily_reset(self):
+		self.daily_pos = 0
 
+	def find_interval_start(self, day, key):
+		# The latest entry with date prior to or equal to day
+		pos = self.daily_pos
+		if (pos < 0) or (pos >= len(self.purchases)) or (self.purchases[pos]['date'] >= day):
+			pos = 0
+		# Find the date before
+		before = pos
+		while (pos < len(self.purchases)) and ((self.purchases[pos]['date'] < day) or (self.purchases[pos]['category'] != key)):
+			if (self.purchases[before]['date'] != self.purchases[pos]['date']) and (self.purchases[pos]['category'] == key):
+				before = pos
+			pos += 1
+		if pos < len(self.purchases) and self.purchases[pos]['date'] == day:
+			before = pos
+		self.daily_pos = before - 1
+		return before
 
-	def process_inputs(self):
-		print("# Calculated inputs")
-		print()
+	def daily_amount(self, day, last_date, key):
+		accumulation = 0
+		pos = self.find_interval_start(day, key)
+		start_date = self.purchases[pos]['date']
 
-		if self.config.latest:
-			self.config.year = self.dates[-1].year
-
-		self.file_suffix = ''
-		if self.config.suffix:
-			self.file_suffix = '-{}'.format(self.config.suffix)
+		while (pos < len(self.purchases)) and ((self.purchases[pos]['date'] <= day) or (self.purchases[pos]['category'] != key)):
+			if self.purchases[pos]['category'] == key:
+				accumulation += self.purchases[pos]['weight']
+			pos += 1
+		if pos == len(self.purchases):
+			end_date = last_date
 		else:
-			if self.config.year and not self.config.latest:
-				self.file_suffix='-{}'.format(self.config.year)
-			else:
-				if not self.config.start_date and not self.config.end_date and not self.config.year and not self.config.latest:
-					self.file_suffix='-all'
+			end_date = self.purchases[pos]['date']
+		# Number of days for this period
+		days = max((end_date - start_date).days, 1)
+		# Average quantity per day
+		return accumulation / days
 
-		if len(self.file_suffix) > 0:
-			print('File suffix: "{}"'.format(self.file_suffix))
-		else:
-			print('File suffix: None')
-
-		start_pos = 0
-		end_pos = len(self.dates)
-		check = 0
-
-		if self.config.year:
-			self.config.start_date = datetime.date(int(self.config.year), 1, 1)
-			self.config.end_date = datetime.date(int(self.config.year), 12, 31)
-			print('Start: {}'.format(self.config.start_date))
-			print('End: {}'.format(self.config.end_date))
-
-		if self.config.start_date:
-			# Remove entries prior to start_date
-			while check < len(self.dates) and self.dates[check] < self.config.start_date:
-				check += 1
-				start_pos = check
-
-		if self.config.end_date:
-			while check < len(self.dates) and self.dates[check] < self.config.end_date:
-				check += 1
-				end_pos = check
-
-		# Scale the data for the first date if the period overlaps with the start date
-		if start_pos > 0:
-			factor = 1.0 - ((self.config.start_date - self.dates[start_pos - 1]).days / (self.dates[start_pos] - self.dates[start_pos - 1]).days)
-			start_overhang_data = Graphs.get_data_point(self.types, start_pos)
-			start_overhang_data = Graphs.scale_data_point(start_overhang_data, factor)
-			Graphs.replace_data_point(self.types, start_overhang_data, start_pos)
-			# Insert an empty data point at the start
-			if factor > 0.0:
-				self.dates.insert(start_pos, self.config.start_date)
-				empty_data = [0] * len(self.types)
-				Graphs.insert_data_point(self.types, empty_data, start_pos)
-				end_pos += 1
-
-		# Check whether we need to insert an extra date at the end to accommodate overhang
-		if end_pos < len(self.dates):
-			factor = 1.0 - ((self.dates[end_pos] - self.config.end_date).days / (self.dates[end_pos] - self.dates[end_pos - 1]).days)
-			end_overhang_data = Graphs.get_data_point(self.types, end_pos)
-			end_overhang_data = Graphs.scale_data_point(end_overhang_data, factor)
-			self.dates.insert(end_pos, self.config.end_date)
-			# Insert an extra scaled data point at the end
-			Graphs.insert_data_point(self.types, end_overhang_data, end_pos)
-			end_pos += 1
-
-		self.dates = self.dates[start_pos:end_pos]
-
-		for pos in range(len(self.types)):
-			self.types[pos] = self.types[pos][start_pos:end_pos]
-
-		if not self.config.start_date:
-			self.config.start_date = self.dates[0]
-
-		if not self.config.end_date:
-			self.config.end_date = self.dates[-1]
-
-		# Duration measured in 90-day periods
-		self.width = round((self.config.end_date - self.config.start_date).days / 90)
-		print('Width: {} periods of 90-days'.format(self.width))
-
-		print()
+	def debug_print_amounts(self, start_date, end_date):
+		self.daily_reset()
+		day = start_date
+		while day < end_date:
+			paper = self.daily_amount(day, end_date, 'paper')
+			plastic = self.daily_amount(day, end_date, 'plastic')
+			print('Date: {}, paper: {}, plastic: {}'.format(day, paper, plastic))
+			day += datetime.timedelta(days=1)
 
 	def overview(self):
 		if (len(self.dates) > 2):
 			print("# Overview")
-			print()
-			start_date = self.dates[0]
-			penultimate_date = self.dates[len(self.dates) - 2]
-			end_date = self.dates[len(self.dates) - 1]
-			duration = (end_date - start_date).days
-			total = sum([sum(wastetype) for wastetype in self.types])
-			latest_total = sum([wastetype[len(wastetype) - 1] for wastetype in self.types])
-			latest_duration = (end_date - penultimate_date).days
-
-			start_year = start_date.year
-			this_year = end_date.year
-
-			year_average = {}
-			for year in range(start_year, this_year + 1):
-				year_total = 0
-				start = 0
-				end = 0
-				for i in range(len(self.dates)):
-					if self.dates[i].year == year:
-						if start == 0:
-							start = self.dates[i]
-							year_pos_start = i
-						year_total += sum([wastetype[i] for wastetype in self.types])
-						end = self.dates[i]
-						year_pos_end = i
-				# Add the fractional parts at the start
-				if year_pos_start > 0:
-					proportion = (datetime.date(year, 1, 1) - self.dates[year_pos_start - 1]).days / (self.dates[year_pos_start] - self.dates[year_pos_start - 1]).days
-					year_total -= proportion * sum([wastetype[year_pos_start] for wastetype in self.types])
-					start = datetime.date(year, 1, 1)
-
-				# Add the fractional parts at end
-				if year_pos_end < len(self.dates) - 1:
-					proportion = (datetime.date(year, 12, 31) - self.dates[year_pos_end]).days / (self.dates[year_pos_end + 1] - self.dates[year_pos_end]).days
-					year_total += proportion * sum([wastetype[year_pos_end + 1] for wastetype in self.types])
-					end = datetime.date(year, 12, 31)
-
-				year_duration = (end - start).days
-				if year_duration > 0:
-					year_average[year] = year_total / year_duration
-
-			print("Total period: \t{} - {} ({} days)".format(start_date, end_date, duration))
-			print("Latest period: \t{} - {} ({} days)".format(penultimate_date, end_date, latest_duration))
-			print()
-
-			print("Overall daily average: \t\t{:.2f} g/day".format(total / duration))
-
-			for year in year_average:
-				print("Year {} daily average: \t{:.2f} g/day".format(year, year_average[year]))
-
-			print("Latest entry daily average: \t{:.2f} g/day".format(latest_total / latest_duration))
 			print()
 
 	def format_path(self, filename):
@@ -571,49 +740,17 @@ class Consumption:
 
 		self.upload = []
 
-		# Stacked line graph for debugging purposes, so don't upload
-		filenames = ['waste01{}.png'.format(self.file_suffix), 'waste01small{}.png'.format(self.file_suffix)]
+		filenames = ['consumption01{}.png'.format(self.file_suffix), 'consumption01{}small.png'.format(self.file_suffix)]
 		self.upload = self.upload + filenames
-		dpis = [180, 90]
-		for filename, dpi in zip(filenames, dpis):
-			print("Generating graph '{}' at {} dpi".format(filename, dpi))
-			graph = LineGraph()
-			graph.dates = self.dates
-			graph.types = self.types
-			graph.labels = self.labels
-			graph.colours = self.colours
-			graph.start_date = self.config.start_date
-			graph.end_date = self.config.end_date
-			filepath = self.format_path(filename)
-			graph.create_plot(self.width, dpi=dpi, filename=filepath)
+		self.annual_stats(filenames)
 
-		filenames = ['waste08{}.png'.format(self.file_suffix), 'waste08small{}.png'.format(self.file_suffix)]
+		filenames = ['consumption02{}.png'.format(self.file_suffix), 'consumption02{}small.png'.format(self.file_suffix)]
 		self.upload = self.upload + filenames
-		for filename, dpi in zip(filenames, dpis):
-			print("Generating graph '{}' at {} dpi".format(filename, dpi))
-			graph = Histocurve()
-			graph.dates = self.dates
-			graph.types = self.types
-			graph.labels = self.labels
-			graph.colours = self.colours
-			graph.start_date = self.config.start_date
-			graph.end_date = self.config.end_date
-			filepath = self.format_path(filename)
-			graph.create_stackedareacurve(self.width, dpi=dpi, filename=filepath)
+		self.draw_year_graph('weight', filenames, 'Weight of household purchases', 'g')
 
-		for i in range(0, len(graph.types)):
-			filenames = []
-			filenames.append("waste-detail0{}-{}{}.png".format(i, self.labels[i].lower(), self.file_suffix))
-			filenames.append("waste-detail0{}small-{}{}.png".format(i, self.labels[i].lower(), self.file_suffix))
-			self.upload = self.upload + filenames
-			for filename, dpi in zip(filenames, dpis):
-				print("Generating graph '{}' at {} dpi".format(filename, dpi))
-				graph = Histogram()
-				graph.dates = self.dates
-				graph.start_date = self.config.start_date
-				graph.end_date = self.config.end_date
-				filepath = self.format_path(filename)
-				graph.create_histogram(self.width, dpi=dpi, filename=filepath, data=self.types[i], ylimit=0, colour=self.colours[i], title=self.labels[i])
+		filenames = ['consumption03{}.png'.format(self.file_suffix), 'consumption03{}small.png'.format(self.file_suffix)]
+		self.upload = self.upload + filenames
+		self.draw_year_graph('price', filenames, 'Cost of household purchases', '€')
 
 		print()
 
@@ -677,8 +814,14 @@ class Consumption:
 		self.load_data(self.config.input_file)
 		self.process_inputs()
 		self.overview()
+
+
+		self.load_category_data(self.config.categories_file, self.config.input_file)
 		self.plot_graphs()
-		self.ftp_upload()
+		#self.ftp_upload()
+
+
+
 
 	def execute_config(self):
 		json_data = {}
@@ -925,8 +1068,7 @@ class Histocurve:
 		legend_labels.reverse()
 		ax[0].legend(legend_labels, loc='upper left')
 
-		#ax[0].set_ylabel("Quantity purchased (g / day)")
-		ax[0].set_ylabel("Quantity purchased (€ / day)")
+		ax[0].set_ylabel("Quantity purchased ({} / day)".format(units))
 		ax[0].set_xlabel("Date")
 		#ax[0].autoscale(enable=True, axis='x', tight=True)
 		ax[0].set_ylim(bottom=0, top=ymax)
@@ -957,8 +1099,7 @@ class Histocurve:
 		ax[1].yaxis.tick_right()
 		ax[1].set_xticklabels([])
 
-		#fig.suptitle("Weight of household purchases")
-		fig.suptitle("Cost of household purchases")
+		fig.suptitle(title)
 		fig.patch.set_facecolor((1.0, 1.0, 1.0, 0.0))
 		plt.tight_layout(pad=2.0, w_pad=0.5)
 		plt.savefig(filename, bbox_inches='tight', transparent=True)
@@ -1070,12 +1211,102 @@ class Histogram:
 # }
 
 consumption = Consumption()
-#consumption.parse_arguments()
+consumption.parse_arguments()
 #consumption.execute_config()
-consumption.load_category_data('categories.csv', 'purchases.csv')
-consumption.annual_stats('consumption01')
-consumption.draw_year_graph('weight', 'consumption02', 'Weight of household purchases', 'g')
-consumption.draw_year_graph('price', 'consumption03', 'Cost of household purchases', '€')
+consumption.load_category_data('categories-waste.csv', 'purchases.csv')
+consumption.annual_stats(['consumption01'])
+
+#consumption.debug_print_amounts(datetime.date(2022, 1, 1), datetime.date(2022, 12, 31))
+
+waste = Waste()
+waste.load_data('../recycling.csv')
+waste.process_inputs()
+
+#waste.debug_print_amounts(datetime.date(2022, 1, 1), datetime.date(2022, 12, 31))
+
+comparison = Comparison(consumption, waste)
+errors = {}
+
+start = 0
+end = 91
+
+for category in waste.categories + ['all']:
+	errors[category] = []
+
+	for offset in range(start, end):
+		error = comparison.average_error(datetime.date(2022, 1, 1), datetime.date(2023, 1, 1), category, offset)
+		errors[category].append(error)
+
+dates = []
+dates_first = []
+dates_second = []
+for day in range(365):
+	dates.append(datetime.date(2022, 1, 1) + datetime.timedelta(days=day))
+	dates_first.append(datetime.datetime(2022, 1, 1) + datetime.timedelta(days=day))
+	dates_second.append(datetime.datetime(2022, 1, 1) + datetime.timedelta(days=day, hours=12))
+
+for category in waste.categories + ['all']:
+	minimum = min(errors[category])
+	offset = errors[category].index(minimum) + start
+	print('Category: {}, min: {}, offset: {}'.format(category, minimum, offset))
+
+	width = 4
+	figsize=(width * 2.875 + 0.5, 6)
+	ratios = [width * 2.875, 0.5]
+	fig, ax = plt.subplots(nrows=1, ncols=2, gridspec_kw={'width_ratios': ratios}, figsize=figsize, dpi=180)
+
+	ax[0].bar(range(end), errors[category], align='edge', edgecolor='black')
+
+	ax[0].set_ylabel("Error $\\frac{1}{n}\\sum_{i = 0}^n (c_i - w_i)^2$")
+	ax[0].set_xlabel("Delay between purchase and recycling (days)")
+	#ax[0].autoscale(enable=True, axis='x', tight=True)
+	#ax[0].set_ylim(bottom=0, top=ylimit)
+	#ax[0].set_xlim(left=dates[0], right=dates[len(dates) - 1])
+	#ax[0].set_xlim(self.start_date, self.end_date)
+
+	fig.suptitle("Offset error for {}".format(category))
+
+	plt.tight_layout(pad=2.0, w_pad=0.5)
+	plt.show()
+
+
+	fig, ax = plt.subplots(nrows=1, ncols=1, figsize=figsize, dpi=180)
+
+	waste.daily_reset()
+	consumption.daily_reset()
+	consumption_daily = []
+	waste_daily = []
+	for day in dates:
+		consumption_daily.append(consumption.daily_amount(day, dates[-1], category))
+		waste_daily.append(waste.daily_amount(day, dates[0], dates[-1], category))
+
+	if sum(consumption_daily) == 0:
+		scale = 1
+	else:
+		scale = sum(waste_daily) / sum(consumption_daily)
+	ax.plot(dates, [x * scale for x in consumption_daily], label='Consumption')
+
+	dates_offset = [x + datetime.timedelta(days=offset) for x in dates]
+	ax.plot(dates_offset, waste_daily, label='waste')
+
+
+	ax.set_ylabel("Quantity (g)")
+	ax.set_xlabel("Date")
+	#ax[0].autoscale(enable=True, axis='x', tight=True)
+	#ax[0].set_ylim(bottom=0, top=ylimit)
+	#ax[0].set_xlim(left=dates[0], right=dates[len(dates) - 1])
+	#ax[0].set_xlim(self.start_date, self.end_date)
+
+	fig.suptitle("Waste and consumption for {}".format(category))
+	plt.legend(loc='right')
+
+	plt.tight_layout(pad=2.0, w_pad=0.5)
+	plt.show()
+
+
+
+#consumption.draw_year_graph('weight', ['consumption02'], 'Weight of household purchases', 'g')
+#consumption.draw_year_graph('price', ['consumption03'], 'Cost of household purchases', '€')
 
 
 
