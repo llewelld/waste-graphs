@@ -728,6 +728,10 @@ class Histocurve:
 		sums = [sum(items) for items in self.types]
 		averages = [ x / float(duration) for x in sums ]
 		daily = [ x * 1.0 for x in averages ]
+		print('Daily averages, totals:')
+		for pos in range(len(averages)):
+			print('{}: {}, {}'.format(self.labels[pos], daily[pos], sums[pos]))
+		print('{}: {}, {}'.format('Total', sum(daily), sum(sums)))
 
 		bottom = [0]
 		for i in range(1, len(daily)):

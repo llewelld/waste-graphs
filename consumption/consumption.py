@@ -107,7 +107,7 @@ class Waste:
 	types = None
 	labels = None
 	colours = ['#94070a', '#00381f', '#00864b', '#009353', '#00b274', '#65c295', '#8ccfb7', '#bee3d3']
-	file_suffix = ''
+	file_suffix = '-2022'
 	width = None
 	upload = None
 
@@ -302,10 +302,24 @@ class Waste:
 class Comparison:
 	consumption = None
 	waste = None
+	start = 0
+	end = 0
+	errors = {}
+	file_suffix = '-2022'
 
-	def __init__(self, consumption, waste):
+	def __init__(self, consumption, waste, start, end):
 		self.consumption = consumption
 		self.waste = waste
+		self.start = start
+		self.end = end
+
+	def process_inputs(self):
+		for category in self.waste.categories + ['all']:
+			self.errors[category] = []
+
+			for offset in range(self.start, self.end):
+				error = comparison.average_error(datetime.date(2022, 1, 1), datetime.date(2023, 1, 1), category, offset)
+				self.errors[category].append(error)
 
 	def average_error(self, start_date, end_date, category, offset):
 		duration = (end_date - start_date).days
@@ -353,7 +367,7 @@ class Comparison:
 			if category == 'all':
 				day_consumption = 0
 				day_waste = 0
-				for check_category in waste.categories:
+				for check_category in self.waste.categories:
 					day_consumption += self.consumption.daily_amount(day, end_date, check_category)
 					day_waste += self.waste.daily_amount(offset_day, start_offset, end_offset, check_category)
 			else:
@@ -362,11 +376,13 @@ class Comparison:
 			amount_consumption.append(day_consumption)
 			amount_waste.append(day_waste)
 
-		if sum(amount_consumption) == 0:
-			scale = 1
-		else:
-			scale = sum(amount_waste) / sum(amount_consumption)
-		amount_consumption = [x * scale for x in amount_consumption]
+		scale = sum(amount_consumption)
+		if scale != 0:
+			amount_consumption = [x / scale for x in amount_consumption]
+
+		scale = sum(amount_waste)
+		if scale != 0:
+			amount_waste = [x / scale for x in amount_waste]
 
 		error = 0.0
 		for pos in range(duration):
@@ -376,6 +392,138 @@ class Comparison:
 			#print('Date: {}, waste: {}, consumption: {}'.format(day, day_consumption, day_waste))
 		average_error = error / duration
 		return average_error
+
+	def plot_graphs(self, filecount):
+		dpis = [180, 90]
+		filenames = ['consumption{:02}{}.png'.format(filecount, self.file_suffix), 'consumption{:02}small{}.png'.format(filecount, self.file_suffix)]
+		for filename, dpi in zip(filenames, dpis):
+			self.plot_errors(filename, dpi)
+		filecount += 1
+
+		waste_categories = self.waste.categories.copy()
+		waste_categories.reverse()
+		for category in waste_categories + ['all']:
+			filenames = ['consumption{:02}{}.png'.format(filecount, self.file_suffix), 'consumption{:02}small{}.png'.format(filecount, self.file_suffix)]
+			for filename, dpi in zip(filenames, dpis):
+				self.plot_with_offset(category, filename, dpi)
+			filecount += 1
+
+	def plot_errors(self, filename, dpi):
+		width = 4
+		figsize=(width * 2.875 + 0.5, 6)
+		fig, ax = plt.subplots(nrows=1, ncols=1, figsize=figsize, dpi=dpi)
+
+		waste_categories = self.waste.categories.copy()
+		waste_categories.reverse()
+		for category in waste_categories + ['all']:
+			minimum = min(self.errors[category])
+			offset = self.errors[category].index(minimum) + self.start
+			print('Category: {}, min: {}, offset: {}'.format(category, minimum, offset))
+
+			consumption.generate_colours(len(waste_categories))
+
+			if category != 'all':
+				colour = consumption.colours[waste_categories.index(category)]
+			else:
+				colour = '#000000'
+			ax.plot(range(self.end), self.errors[category], label=category.capitalize(), color=colour)
+
+		ax.set_ylabel("Error $E = \\frac{1}{n}\\sum_{i = 0}^n (\\frac{c_i}{c_T} - \\frac{w_i}{w_T})^2$")
+		ax.set_xlabel("Delay between purchase and recycling (days)")
+		#ax[0].autoscale(enable=True, axis='x', tight=True)
+		ax.set_ylim(bottom=0, top=0.0002)
+		#ax[0].set_xlim(left=dates[0], right=dates[len(dates) - 1])
+		#ax[0].set_xlim(self.start_date, self.end_date)
+
+		fig.suptitle("Offset error for {}".format(category))
+
+		plt.legend(loc='right')
+		plt.tight_layout(pad=2.0, w_pad=0.5)
+		plt.savefig(filename, bbox_inches='tight', transparent=True)
+		plt.close()
+
+	def plot_with_offset(self, category, filename, dpi):
+		dates = []
+		for day in range(365):
+			dates.append(datetime.date(2022, 1, 1) + datetime.timedelta(days=day))
+
+		minimum = min(self.errors[category])
+		offset = self.errors[category].index(minimum) + self.start
+		print('Category: {}, offset: {} days'.format(category, offset))
+
+		width = 4
+		figsize=(width * 2.875 + 0.5, 6)
+		fig, ax = plt.subplots(nrows=1, ncols=1, figsize=figsize, dpi=dpi)
+
+		self.waste.daily_reset()
+		consumption.daily_reset()
+		consumption_daily = []
+		waste_daily = []
+		for day in dates:
+			if category == 'all':
+				consumption_sum = 0
+				waste_sum = 0
+				for category_sum in self.waste.categories:
+					consumption_sum += consumption.daily_amount(day, dates[-1], category_sum)
+					waste_sum += self.waste.daily_amount(day, dates[0], dates[-1], category_sum)
+				consumption_daily.append(consumption_sum)
+				waste_daily.append(waste_sum)
+			else:
+				consumption_daily.append(consumption.daily_amount(day, dates[-1], category))
+				waste_daily.append(self.waste.daily_amount(day, dates[0], dates[-1], category))
+
+		scale = sum(consumption_daily)
+		if scale != 0:
+			consumption_daily = [x / scale for x in consumption_daily]
+
+		scale = sum(waste_daily)
+		if scale != 0:
+			waste_daily = [x / scale for x in waste_daily]
+
+		ax.plot(dates, consumption_daily, label='Consumption', color='#6e94fc')
+
+		dates_offset = [x + datetime.timedelta(days=offset) for x in dates]
+		if offset == 0:
+			label='Waste (no offset)'
+		else:
+			label='Waste ({} day offset)'.format(offset)
+
+		ax.plot(dates_offset, waste_daily, label=label, color='#94070a')
+
+		ax.set_ylabel("Quantity (normalised)")
+		ax.set_xlabel("Date")
+		#ax[0].autoscale(enable=True, axis='x', tight=True)
+		#ax[0].set_ylim(bottom=0, top=ylimit)
+		#ax[0].set_xlim(left=dates[0], right=dates[len(dates) - 1])
+		#ax[0].set_xlim(self.start_date, self.end_date)
+
+		fig.suptitle("Waste and consumption for {}".format(category))
+		plt.legend(loc='right')
+
+		plt.tight_layout(pad=2.0, w_pad=0.5)
+		plt.savefig(filename, bbox_inches='tight', transparent=True)
+		plt.close()
+
+	def output_table(self):
+		print('<table align="center" border="1" cellpadding="4" cellspacing="0">')
+		print('\t<tbody>')
+		print('\t\t<tr align="left">')
+		print('\t\t\t<td>Category</td>')
+		print('\t\t\t<td>Min mean square error</td>')
+		print('\t\t\t<td>Offset (days)</td>')
+		print('\t\t</tr>')
+		waste_categories = self.waste.categories.copy()
+		waste_categories.reverse()
+		for category in waste_categories + ['all']:
+			minimum = min(self.errors[category])
+			offset = self.errors[category].index(minimum) + self.start
+			print('\t\t<tr>')
+			print('\t\t\t<td>{}</td>'.format(category))
+			print('\t\t\t<td align="right">{:0.3e}</td>'.format(minimum))
+			print('\t\t\t<td align="right">{}</td>'.format(offset))
+			print('\t\t</tr>')
+		print('\t</tbody>')
+		print('</table>')
 
 
 ################################################
@@ -389,7 +537,7 @@ class Consumption:
 	types = None
 	labels = None
 	colours = ['#94070a', '#00381f', '#00864b', '#009353', '#00b274', '#65c295', '#8ccfb7', '#bee3d3']
-	file_suffix = ''
+	file_suffix = '-2022'
 	width = None
 	upload = None
 	categories = None
@@ -550,18 +698,24 @@ class Consumption:
 		else:
 			print('No new categories added')
 
+		self.generate_colours(len(self.categories))
+
+		#self.colours = ['#94070a', '#00381f', '#00864b', '#009353', '#00b274', '#65c295', '#8ccfb7', '#bee3d3']
+
+	def waste_colours(self):
+		self.colours = ['#94070a', '#00381f', '#00864b', '#009353', '#00b274', '#65c295', '#8ccfb7', '#bee3d3']
+
+	def generate_colours(self, count):
 		self.colours = []		
-		step = 2.0 * math.pi / len(self.categories)
+		step = 2.0 * math.pi / count
 		offset = 2.0 * math.pi / 3.0
-		for count in range(len(self.categories)):
+		for count in range(count):
 			self.colours.append(((2.0 + (math.cos((0.0 * offset) + (step * count)))) / 3.0, (2.0 + (math.cos((1.0 * offset) + (step * count)))) / 3.0, (2.0 + (math.cos((2.0 * offset) + (step * count)))) / 3.0))
 
-		for count in range(len(self.categories) - 1):
+		for count in range(count - 1):
 			if count % 2 == 0:
 				self.colours[count], self.colours[count + 1] = self.colours[count + 1], self.colours[count]
 		self.colours.reverse()
-
-		#self.colours = ['#94070a', '#00381f', '#00864b', '#009353', '#00b274', '#65c295', '#8ccfb7', '#bee3d3']
 
 	def plot_sub_stacked(self, ax, daily):
 		bottom = [0]
@@ -571,6 +725,15 @@ class Consumption:
 		ax.bar([0], daily, bottom=bottom, color=self.colours, width=1.0)
 		ax.set_ylim(ax.get_ylim())
 		ax.set_xticklabels([])
+
+	def annual_stats_add_text(self, axis, daily, template, threshold):
+		position = 0
+		for count in range(len(self.categories)):
+			amount = daily[count]
+			if amount >= 2.5 * threshold:
+				offset = (daily[count] / 2.0) - (threshold / 2.0)
+				axis.text(0, position + offset, template.format(amount), ha='center', va='bottom', fontsize=8)
+			position += daily[count]
 
 	def annual_stats(self, filenames):
 		totals = {'total': {'quantity': 0, 'weight': 0.0, 'price': 0.0}}
@@ -617,6 +780,8 @@ class Consumption:
 			daily_total = total['quantity'] / self.duration
 			ax[0].text(0, daily_total, '{:.1f} items'.format(daily_total), ha='center', va='bottom')
 
+			#self.annual_stats_add_text(ax[0], daily, '{:.1f} items', 0.07)
+
 			# Average weights
 			daily = [ totals[category]['weight'] / self.duration for category in self.categories ]
 			self.plot_sub_stacked(ax[1], daily)
@@ -624,12 +789,16 @@ class Consumption:
 			daily_total = total['weight'] / self.duration
 			ax[1].text(0, daily_total, '{:.0f} g'.format(daily_total), ha='center', va='bottom')
 
+			#self.annual_stats_add_text(ax[1], daily, '{:.0f} g', 12)
+
 			# Average prices
 			daily = [ totals[category]['price'] / self.duration for category in self.categories ]
 			self.plot_sub_stacked(ax[2], daily)
 			ax[2].set_xlabel("Daily price\n€/day")
 			daily_total = total['price'] / self.duration
 			ax[2].text(0, daily_total, '{:.2f} €'.format(daily_total), ha='center', va='bottom')
+
+			#self.annual_stats_add_text(ax[2], daily, '{:.2f} €', 0.15)
 
 			patches = []
 			for count in range(len(self.categories)):
@@ -734,23 +903,26 @@ class Consumption:
 	def format_path(self, filename):
 		return '{}/{}'.format(self.config.output_dir, filename) if self.config.output_dir else filename
 
-	def plot_graphs(self):
+	def plot_graphs(self, filecount=1):
 		print("# Plotting data")
 		print()
 
 		self.upload = []
 
-		filenames = ['consumption01{}.png'.format(self.file_suffix), 'consumption01{}small.png'.format(self.file_suffix)]
+		filenames = ['consumption{:02}{}.png'.format(filecount, self.file_suffix), 'consumption{:02}small{}.png'.format(filecount, self.file_suffix)]
 		self.upload = self.upload + filenames
 		self.annual_stats(filenames)
+		filecount += 1
 
-		filenames = ['consumption02{}.png'.format(self.file_suffix), 'consumption02{}small.png'.format(self.file_suffix)]
+		filenames = ['consumption{:02}{}.png'.format(filecount, self.file_suffix), 'consumption{:02}small{}.png'.format(filecount, self.file_suffix)]
 		self.upload = self.upload + filenames
 		self.draw_year_graph('weight', filenames, 'Weight of household purchases', 'g')
+		filecount += 1
 
-		filenames = ['consumption03{}.png'.format(self.file_suffix), 'consumption03{}small.png'.format(self.file_suffix)]
+		filenames = ['consumption{:02}{}.png'.format(filecount, self.file_suffix), 'consumption{:02}small{}.png'.format(filecount, self.file_suffix)]
 		self.upload = self.upload + filenames
 		self.draw_year_graph('price', filenames, 'Cost of household purchases', '€')
+		filecount += 1
 
 		print()
 
@@ -819,9 +991,6 @@ class Consumption:
 		self.load_category_data(self.config.categories_file, self.config.input_file)
 		self.plot_graphs()
 		#self.ftp_upload()
-
-
-
 
 	def execute_config(self):
 		json_data = {}
@@ -1212,11 +1381,25 @@ class Histogram:
 
 consumption = Consumption()
 consumption.parse_arguments()
-#consumption.execute_config()
-consumption.load_category_data('categories-waste.csv', 'purchases.csv')
-consumption.annual_stats(['consumption01'])
-
+#consumption.execute_config() # Should be used instead of draw()
+consumption.load_category_data('categories-min.csv', 'purchases.csv')
+#consumption.annual_stats(['consumption01'])
+#consumption.draw() # Should be used instead of plot_graphs()
+consumption.plot_graphs(1)
 #consumption.debug_print_amounts(datetime.date(2022, 1, 1), datetime.date(2022, 12, 31))
+
+consumption = Consumption()
+consumption.parse_arguments()
+#consumption.execute_config() # Should be used instead of draw()
+consumption.load_category_data('categories-waste.csv', 'purchases.csv')
+consumption.waste_colours()
+
+#consumption.annual_stats(['consumption01'])
+#consumption.draw() # Should be used instead of plot_graphs()
+consumption.plot_graphs(4)
+#consumption.debug_print_amounts(datetime.date(2022, 1, 1), datetime.date(2022, 12, 31))
+
+#exit()
 
 waste = Waste()
 waste.load_data('../recycling.csv')
@@ -1224,89 +1407,12 @@ waste.process_inputs()
 
 #waste.debug_print_amounts(datetime.date(2022, 1, 1), datetime.date(2022, 12, 31))
 
-comparison = Comparison(consumption, waste)
-errors = {}
-
-start = 0
-end = 91
-
-for category in waste.categories + ['all']:
-	errors[category] = []
-
-	for offset in range(start, end):
-		error = comparison.average_error(datetime.date(2022, 1, 1), datetime.date(2023, 1, 1), category, offset)
-		errors[category].append(error)
-
-dates = []
-dates_first = []
-dates_second = []
-for day in range(365):
-	dates.append(datetime.date(2022, 1, 1) + datetime.timedelta(days=day))
-	dates_first.append(datetime.datetime(2022, 1, 1) + datetime.timedelta(days=day))
-	dates_second.append(datetime.datetime(2022, 1, 1) + datetime.timedelta(days=day, hours=12))
-
-for category in waste.categories + ['all']:
-	minimum = min(errors[category])
-	offset = errors[category].index(minimum) + start
-	print('Category: {}, min: {}, offset: {}'.format(category, minimum, offset))
-
-	width = 4
-	figsize=(width * 2.875 + 0.5, 6)
-	ratios = [width * 2.875, 0.5]
-	fig, ax = plt.subplots(nrows=1, ncols=2, gridspec_kw={'width_ratios': ratios}, figsize=figsize, dpi=180)
-
-	ax[0].bar(range(end), errors[category], align='edge', edgecolor='black')
-
-	ax[0].set_ylabel("Error $\\frac{1}{n}\\sum_{i = 0}^n (c_i - w_i)^2$")
-	ax[0].set_xlabel("Delay between purchase and recycling (days)")
-	#ax[0].autoscale(enable=True, axis='x', tight=True)
-	#ax[0].set_ylim(bottom=0, top=ylimit)
-	#ax[0].set_xlim(left=dates[0], right=dates[len(dates) - 1])
-	#ax[0].set_xlim(self.start_date, self.end_date)
-
-	fig.suptitle("Offset error for {}".format(category))
-
-	plt.tight_layout(pad=2.0, w_pad=0.5)
-	plt.show()
+comparison = Comparison(consumption, waste, 0, 91)
+comparison.process_inputs()
+comparison.plot_graphs(7)
+comparison.output_table()
 
 
-	fig, ax = plt.subplots(nrows=1, ncols=1, figsize=figsize, dpi=180)
-
-	waste.daily_reset()
-	consumption.daily_reset()
-	consumption_daily = []
-	waste_daily = []
-	for day in dates:
-		consumption_daily.append(consumption.daily_amount(day, dates[-1], category))
-		waste_daily.append(waste.daily_amount(day, dates[0], dates[-1], category))
-
-	if sum(consumption_daily) == 0:
-		scale = 1
-	else:
-		scale = sum(waste_daily) / sum(consumption_daily)
-	ax.plot(dates, [x * scale for x in consumption_daily], label='Consumption')
-
-	dates_offset = [x + datetime.timedelta(days=offset) for x in dates]
-	ax.plot(dates_offset, waste_daily, label='waste')
-
-
-	ax.set_ylabel("Quantity (g)")
-	ax.set_xlabel("Date")
-	#ax[0].autoscale(enable=True, axis='x', tight=True)
-	#ax[0].set_ylim(bottom=0, top=ylimit)
-	#ax[0].set_xlim(left=dates[0], right=dates[len(dates) - 1])
-	#ax[0].set_xlim(self.start_date, self.end_date)
-
-	fig.suptitle("Waste and consumption for {}".format(category))
-	plt.legend(loc='right')
-
-	plt.tight_layout(pad=2.0, w_pad=0.5)
-	plt.show()
-
-
-
-#consumption.draw_year_graph('weight', ['consumption02'], 'Weight of household purchases', 'g')
-#consumption.draw_year_graph('price', ['consumption03'], 'Cost of household purchases', '€')
 
 
 
